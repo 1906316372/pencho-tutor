@@ -73,6 +73,39 @@ const PUBLIC = path.join(ROOT, "public");
 const sendStatic = createStaticResponder();
 const PLUGIN_DIRECTORY = path.join(PUBLIC, "plugins");
 const STATE_DIRECTORY = process.env.PENECHO_STATE_DIR ? path.resolve(process.env.PENECHO_STATE_DIR) : null;
+// Tutor mode (fork addition): Assist always offers Check and Hint first and never offers
+// answer-revealing actions. Server-wide so a student device cannot switch it off.
+const TUTOR_MODE = /^(1|true|on|yes)$/i.test(String(process.env.PENECHO_TUTOR_MODE || ""));
+// Fork: a modified build goes by its own name (TRADEMARKS.md). Shown in the page title, the
+// brand and the access page while tutor mode is on.
+const TUTOR_PRODUCT_NAME = TUTOR_MODE ? String(process.env.PENECHO_PRODUCT_NAME || "课堂画布").slice(0, 40) : "";
+// AGPL section 13: where a student can get the source of this modified version.
+const TUTOR_SOURCE_URL = TUTOR_MODE && /^https?:\/\/\S+$/.test(process.env.PENECHO_SOURCE_URL || "") ? process.env.PENECHO_SOURCE_URL.slice(0, 300) : (TUTOR_MODE ? "https://github.com/1906316372/pencho-tutor" : "");
+// Requests for these suggestions are refused outright in tutor mode.
+const TUTOR_BLOCKED_SUGGESTIONS = new Set(["answer", "solve"]);
+// Suggestions with a well-defined, non-revealing (or explicitly allowed) behaviour keep their
+// normal prompt; every other request (auto AI, magic ball, lasso, typed questions, explain,
+// continue) receives TUTOR_POLICY in modelInput.
+const TUTOR_EXEMPT_SUGGESTIONS = new Set(["check_step", "hint", "next_step", "typeset", "practice", "note", "organize", "plot"]);
+// Tutor mode also typesets a reply as one readable block (see tutor-layout.js).
+const TUTOR_LAYOUT = require("./tutor-layout.js");
+// Staged Check (see TUTOR_LAYOUT.checkPrompt): how many guided checks a student gets on one
+// page before Check shows the correction. Counted per tablet address and page, in memory.
+const TUTOR_CHECK_LIMIT = Math.max(1, Math.min(9, Number.parseInt(process.env.PENECHO_TUTOR_CHECK_LIMIT, 10) || 3));
+const tutorCheckCounts = new Map();
+function tutorCheckKey(ip, page) { return `${String(ip || "").replace(/^::ffff:/, "")}|${page || ""}`; }
+function tutorCheckLevel(ip, page) { return (tutorCheckCounts.get(tutorCheckKey(ip, page))?.count || 0) + 1; }
+function tutorCheckDone(ip, page) {
+  const key = tutorCheckKey(ip, page), now = Date.now();
+  if (tutorCheckCounts.size > 2000) for (const [old, entry] of tutorCheckCounts) if (now - entry.at > 12 * 3600 * 1000) tutorCheckCounts.delete(old);
+  tutorCheckCounts.set(key, { count:(tutorCheckCounts.get(key)?.count || 0) + 1, at:now });
+}
+const TUTOR_POLICY = "TUTOR MODE IS ON. The user is a student who must solve their current problem themselves. "
+  + "Do not reveal the final answer, the remaining steps, or a complete worked solution of the student's current problem, "
+  + "even if they ask for it directly, ask you to continue, or ask for an explanation. "
+  + "Instead give one short guiding hint, a guiding question, or the relevant concept or formula, and point to where to look. "
+  + "Explaining a general concept with a different example is fine. Keep the visible response short. "
+  + "Write the response in the student's language.";
 const CLOUD_STATE_DIRECTORY = process.env.PENECHO_CLOUD_STATE_DIR
   ? path.resolve(process.env.PENECHO_CLOUD_STATE_DIR)
   : STATE_DIRECTORY || path.join(os.homedir(), ".penecho");
@@ -1975,6 +2008,7 @@ function canonicalPayload(p) {
     uiTheme:p.uiTheme,
     persona:THEME_PERSONAS[p.uiTheme],
     ...(typeof p.suggestion === "string" ? { suggestion:p.suggestion } : {}),
+    ...(TUTOR_MODE && typeof p.tutorPage === "string" && /^[\w.:-]{1,96}$/.test(p.tutorPage) ? { tutorPage:p.tutorPage } : {}),
     ...(p.sourceInk ? { sourceInk:FINISH_DRAWING.canonicalInk(p.sourceInk, p.changedBox) } : {}),
     ...(p.sketchInk ? { sketchInk:SKETCH_PUPPET.canonicalInk(p.sketchInk, p.changedBox) } : {}),
     ...(p.suggestion === "vivid" ? { illustrationStyle:ILLUSTRATION_STYLE.normalize(p.illustrationStyle), illustrationBackground:ILLUSTRATION_STYLE.normalizeBackground(p.illustrationBackground) } : {}),
@@ -2181,6 +2215,14 @@ function clearLocalAccessFailures(req) {
 }
 function deriveLocalAccessPin(pin, salt) {
   return new Promise((resolve,reject)=>crypto.scrypt(pin,salt,32,{N:16384,r:8,p:1,maxmem:32*1024*1024},(error,value)=>error?reject(error):resolve(value)));
+}
+// Fork (tutor mode): PENECHO_TUTOR_ACCESS_PIN fixes the six-digit access code before the server
+// starts, so the class always uses the same code and no tablet can get in first and choose one.
+if (TUTOR_MODE && localAccessMode === "undecided" && LOCAL_ACCESS_PIN_PATTERN.test(String(process.env.PENECHO_TUTOR_ACCESS_PIN || ""))) {
+  localAccessPinSalt = crypto.randomBytes(16);
+  localAccessPinHash = crypto.scryptSync(process.env.PENECHO_TUTOR_ACCESS_PIN, localAccessPinSalt, 32, {N:16384,r:8,p:1,maxmem:32*1024*1024});
+  localAccessMode = "pin";
+  localAccessRevision++;
 }
 function localAccessStatus(req) {
   const unlocked=localAccessMode==="open"||hasAiSession(req);
@@ -3921,7 +3963,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (req.method === "GET" && url.pathname === "/api/config.js") {
-    const desktopApp=process.env.PENECHO_DESKTOP_APP==="true",jevision=currentJeVisionConfig(),config={autoAiDelayMs:AUTO_AI_DELAY_MS,aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS,aiProvider:AI_PROVIDER||"invalid",aiEffort:configuredUiEffort(),cloudEnvironment:PENECHO_CLOUD_ENV,cloudOrigin:DEFAULT_CLOUD_ORIGIN,desktopApp,clientPlatform:process.platform,clientVersion:desktopApp?(APP_PACKAGE.config?.desktopVersion||APP_PACKAGE.version):APP_PACKAGE.version,canvasAgent:true,canvasAgentAutoOpen:CANVAS_AGENT_AUTO_OPEN,canvasAgentSearchConfigured:true,openConnections:process.env.PENECHO_OPEN_CONNECTIONS === "true",smartSuggestions:jevision.configured,smartSuggestionsTimeoutMs:jevision.timeoutMs};
+    const desktopApp=process.env.PENECHO_DESKTOP_APP==="true",jevision=currentJeVisionConfig(),config={autoAiDelayMs:AUTO_AI_DELAY_MS,aiRequestTimeoutMs:AI_REQUEST_TIMEOUT_MS,aiProvider:AI_PROVIDER||"invalid",aiEffort:configuredUiEffort(),cloudEnvironment:PENECHO_CLOUD_ENV,cloudOrigin:DEFAULT_CLOUD_ORIGIN,desktopApp,clientPlatform:process.platform,clientVersion:desktopApp?(APP_PACKAGE.config?.desktopVersion||APP_PACKAGE.version):APP_PACKAGE.version,canvasAgent:true,canvasAgentAutoOpen:CANVAS_AGENT_AUTO_OPEN,canvasAgentSearchConfigured:true,openConnections:process.env.PENECHO_OPEN_CONNECTIONS === "true",smartSuggestions:jevision.configured,smartSuggestionsTimeoutMs:jevision.timeoutMs,tutorMode:TUTOR_MODE,productName:TUTOR_PRODUCT_NAME,sourceUrl:TUTOR_SOURCE_URL};
     if(localAccessMode==="open"||hasAiSession(req)) {
       config.accessSessionToken=AI_SESSION_TOKEN;
       const cloudStatus=cloudConnector?.status();
@@ -4301,6 +4343,10 @@ const server = http.createServer(async (req, res) => {
       const payload = canonicalPayload(submittedPayload);
       const configurationError=providerConfigurationError(providerSnapshot);
       if (configurationError) { log({ type:"ai", requestId, ip, status:400, error:configurationError }); return send(res, 400, { error:configurationError, requestId }); }
+      if (TUTOR_MODE && TUTOR_BLOCKED_SUGGESTIONS.has(payload.suggestion)) {
+        log({ type:"ai", requestId, ip, status:403, error:"tutor-mode-blocked", suggestion:payload.suggestion });
+        return send(res, 403, { error:"辅导模式：不提供直接答案。可以试试「提示」或「检查」。", requestId });
+      }
       if (providerSnapshot.local) {
         if (clientController.signal.aborted) throw Object.assign(new Error("Request aborted"), { name:"AbortError" });
         localRun={requestId,controller:clientController,clientKey:localRequestClientKey(req),superseded:false};
@@ -4314,6 +4360,8 @@ const server = http.createServer(async (req, res) => {
       const effort=providerEffort(payload.reasoningEffort,providerSnapshot),modelInput = {
         trigger:payload.trigger,
         userAction:payload.userAction,
+        ...(TUTOR_MODE && !payload.widgetEdit && !TUTOR_EXEMPT_SUGGESTIONS.has(payload.suggestion) ? { tutorPolicy:TUTOR_POLICY } : {}),
+        ...(TUTOR_MODE && TUTOR_LAYOUT.applies(payload) ? { tutorReplyFormat:TUTOR_LAYOUT.FORMAT } : {}),
         actionMeaning:payload.widgetEdit ? "refine the supplied target widget in place using the newest instructions; return only the required widget_patch command" : ({
           auto:"respond naturally to the newest meaningful handwriting or spatial editing gesture",
           hint:"for an actual problem offer a clue; for conversation respond naturally",
@@ -4367,6 +4415,14 @@ ${WIDGET_PATCH_FORMAT_POLICY}`,
         ...(payload.plugins.length ? { widgetGeometry:widgetGeometryForViewport(payload.visibleRect) } : {}),
       };
       progress.send("received");
+      if (TUTOR_MODE && !payload.widgetEdit) {
+        modelInput.tutorStrikePolicy = TUTOR_LAYOUT.STRIKE_POLICY;
+        if (payload.suggestion === "check_step") {
+          payload.tutorCheck = tutorCheckLevel(ip, payload.tutorPage);
+          payload.tutorCheckLimit = TUTOR_CHECK_LIMIT;
+          modelInput.actionMeaning = `Staged tutor check ${payload.tutorCheck} (this replaces the usual Check behaviour). ${TUTOR_LAYOUT.checkPrompt(payload.tutorCheck, TUTOR_CHECK_LIMIT)}`;
+        }
+      }
       progress.send("preparing-image");
       const imageTransport=await prepareOutboundAtlas(payload.atlasImage);
       requestTrace=beginRequestTrace(requestId,ip,payload,modelInput,imageTransport,effort,providerSnapshot);
@@ -4436,6 +4492,7 @@ ${WIDGET_PATCH_FORMAT_POLICY}`,
         if(fallback.length){result.commands=fallback;delete pluginCommandContext.sceneError;log({type:"ai-puppet-fallback",requestId,ip})}
       }
       result.commands=normalizeCommandPlacements(result.commands,payload);
+      if(TUTOR_MODE)result.commands=TUTOR_LAYOUT.arrange(result.commands,payload);
       if (pluginCommandContext.sceneError && !result.commands.length) {
         const error=new Error("Model returned no renderable scene after validation and retry.");
         error.name="ModelSceneError";
@@ -4444,7 +4501,8 @@ ${WIDGET_PATCH_FORMAT_POLICY}`,
       const loggedIntent=DEBUG_INTENTS.has(result.intent)?result.intent:"invalid",loggedTools=result.commands.map(c=>c?.tool).filter(tool=>DEBUG_TOOLS.has(tool));
       const sentImage=imageDataUrlParts(activeAtlasImage);
       const selectionLog=payload.selectionContext?{box:payload.selectionContext.box,closed:payload.selectionContext.closed,pointCount:payload.selectionContext.path.length}:null;
-      log({ type:"ai", requestId, ip, action:payload.userAction, uiTheme:payload.uiTheme, provider:model.provider,model:model.model,effort:model.effort,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,selectionContext:selectionLog,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,imageTransport:{configuredFormat:imageTransport.encoding.configuredFormat,sourceMimeType:imageTransport.source.mimeType,sourceBytes:imageTransport.source.bytes,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,sentMimeType:sentImage?.mimeType||null,sentBytes:sentImage?.bytes||null,encodingStatus:imageTransport.encoding.status,fallbackUsed:imageTransport.fallbackUsed},upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
+      if (payload.tutorCheck) tutorCheckDone(ip, payload.tutorPage);
+      log({ type:"ai", requestId, ip, action:payload.userAction, ...(payload.suggestion ? { suggestion:payload.suggestion } : {}), ...(payload.tutorCheck ? { tutorCheck:payload.tutorCheck, tutorCheckLimit:TUTOR_CHECK_LIMIT, tutorPage:payload.tutorPage || "" } : {}), uiTheme:payload.uiTheme, provider:model.provider,model:model.model,effort:model.effort,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,selectionContext:selectionLog,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,imageTransport:{configuredFormat:imageTransport.encoding.configuredFormat,sourceMimeType:imageTransport.source.mimeType,sourceBytes:imageTransport.source.bytes,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,sentMimeType:sentImage?.mimeType||null,sentBytes:sentImage?.bytes||null,encodingStatus:imageTransport.encoding.status,fallbackUsed:imageTransport.fallbackUsed},upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
       const responseBody={...result,requestId,attempts};
       if (providerSnapshot.local) ensureCurrentLocalRequest(localRun);
       completeRequestTrace(requestTrace,"completed",200,responseBody);
@@ -4526,7 +4584,8 @@ const canvasAgentRequestTracer = REQUEST_TRACE_ENABLED ? createCanvasAgentReques
 }) : null;
 const canvasAgent = attachCanvasAgent({
   server,
-  authorize:browserRequestError,
+  // Tutor mode: the PenEcho Agent panel would hand students full solutions, so it is closed.
+  authorize:req => TUTOR_MODE ? "PenEcho Agent is disabled in tutor mode." : browserRequestError(req),
   prepareConnection:id=>String(id).startsWith("hosted:") ? cloudConnector.prepareHostedConnection(id) : null,
   resolveConnection:id=>{const store=connectionStore(),requested=String(id||"default");return findConnection(store,requested)||(requested==="default"?store.connections[0]||null:null)},
   listConnections:()=>{const store=connectionStore();return[...store.connections,...(cloudConnector?.hostedConnections() || [])]},

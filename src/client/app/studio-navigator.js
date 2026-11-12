@@ -1044,7 +1044,8 @@
       studioNavigatorMcpEnabled=enabled;
       if(!enabled){studioMcpPendingDocumentId=null;studioMcpPendingRegion=null;studioMcpLatestDocumentId=null;studioMcpLatestRegion=null;}
       studioNavigatorMcpTab.hidden=false;studioNavigatorMcpTab.dataset.online=String(enabled);
-      if(enabled&&reveal){
+      // Fork: a student's tablet links up by itself; it must not open the sidebar or leave pen mode.
+      if(enabled&&reveal&&!(typeof tutorStudentUi==="function"&&tutorStudentUi())){
         selectCanvasToolMode("hand");
         studioNavigatorSuspendedAgent=false;
         studioNavigatorRestoreAgentAfterManager=false;

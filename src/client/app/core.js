@@ -2001,7 +2001,9 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     if (font === AI_FONT_HANDWRITTEN_LEGACY) return AI_FONT_HANDWRITTEN;
     return AI_FONT_OPTIONS.has(font) ? font : TEXT_EDITOR_FONT_FAMILY;
   }
-  const storedPrimaryLanguage = localStorage.getItem("penecho-language"),
+  // Fork (tutor mode): a Chinese-language device that never chose a language starts in Chinese.
+  const storedPrimaryLanguage = localStorage.getItem("penecho-language")
+      || (globalThis.PENECHO_CONFIG?.tutorMode === true && /^zh/i.test(globalThis.navigator?.language || "") ? "zh" : null),
     storedLegacyLanguage = localStorage.getItem("ghostboard-language"),
     storedTheme = localStorage.getItem("penecho-theme") || localStorage.getItem("ghostboard-theme"),
     storedStudioPalette = localStorage.getItem("penecho-studio-palette"),
@@ -2910,7 +2912,15 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     });
     return true;
   }
+  // Fork (tutor mode): a student's tablet gets a reduced interface. The teacher's own computer
+  // (opened as localhost) keeps everything for setup; "?student=1" previews the student view there.
+  function tutorStudentUi() {
+    const place = globalThis.location;
+    return globalThis.PENECHO_CONFIG?.tutorMode === true
+      && (/[?&]student=1\b/.test(place?.search || "") || !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(place?.hostname || "localhost"));
+  }
   function maybeStartFeatureTour(retry = false) {
+    if (tutorStudentUi()) return false;
     if(window.PENECHO_CONFIG?.browserDraftId||CANVAS_COMPANION_REQUESTED)return false;
     if (featureTour.active || changelog.active || (featureTour.autoChecked && !retry)) return false;
     featureTour.autoChecked = true;
@@ -2966,6 +2976,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     } catch {}
   }
   function maybeShowChangelog(force = false) {
+    if (tutorStudentUi() && !force) return false;
     if((window.PENECHO_CONFIG?.browserDraftId||CANVAS_COMPANION_REQUESTED)&&!force)return false;
     if (!changelogLayer || !changelogDialog || changelog.active || featureTour.active || !pluginPopover.hidden || (!force && changelogSeen())) return false;
     hideAutoDelayControl();
@@ -5125,7 +5136,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     mcpRenderSettings();
     if(typeof canvasDocuments!=="undefined")canvasDocumentsRender();
     document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
-    document.title = t("title");
+    document.title = globalThis.PENECHO_CONFIG?.productName || t("title");
     document.querySelectorAll("[data-i18n]").forEach((node) => (node.textContent = t(node.dataset.i18n)));
     document.querySelectorAll("[data-i18n-aria]").forEach((node) => node.setAttribute("aria-label", t(node.dataset.i18nAria)));
     document.querySelectorAll("[data-i18n-title]").forEach((node) => node.setAttribute("title", t(node.dataset.i18nTitle)));

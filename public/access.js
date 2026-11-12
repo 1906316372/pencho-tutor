@@ -25,7 +25,15 @@
 
   const $ = (selector) => document.querySelector(selector),
     title=$("#accessTitle"),description=$("#accessDescription"),loading=$("#accessLoading"),setup=$("#accessSetup"),pinView=$("#accessPin"),risk=$("#accessRisk"),errorBox=$("#accessError"),retryButton=$("#accessRetry"),dots=[...document.querySelectorAll("#accessPinDots i")],pinStep=$("#accessPinStep"),backButton=$("#accessPinBack");
-  let language=localStorage.getItem("penecho-language")==="zh"?"zh":"en",flow="unlock",entry="",busy=false,cooldownTimer=0,cooldownUntil=0;
+  // Fork: in tutor mode the page carries the build's own name.
+  const PRODUCT_NAME = window.PENECHO_CONFIG?.productName || "";
+  if (PRODUCT_NAME) {
+    for (const copy of Object.values(COPY)) for (const key of Object.keys(copy)) copy[key] = String(copy[key]).replaceAll("PenEcho", PRODUCT_NAME);
+    document.title = PRODUCT_NAME;
+    const brandName = document.querySelector(".access-brand strong");
+    if (brandName) brandName.textContent = PRODUCT_NAME;
+  }
+  let language=localStorage.getItem("penecho-language")==="zh"||(PRODUCT_NAME&&!localStorage.getItem("penecho-language")&&/^zh/i.test(navigator.language||""))?"zh":"en",flow="unlock",entry="",busy=false,cooldownTimer=0,cooldownUntil=0;
 
   function applyAppearance() {
     const storedTheme=localStorage.getItem("penecho-theme")||localStorage.getItem("ghostboard-theme"),

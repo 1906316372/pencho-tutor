@@ -2280,3 +2280,255 @@ body[data-theme="studio"] #canvasAgentPanel #canvasAgentInput::placeholder { col
   :root[data-penecho-companion] body .topbar #companionViewToggle:not([hidden]) { width: 28px; padding: 0; }
   :root[data-penecho-companion] body .topbar .companion-view-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+
+/* Tutor fork (2026-11-11): the bottom tool dock sits on the screen edge
+   instead of floating 16px above it. The corner clusters, popovers and hints
+   are positioned from the same variable, so they follow it and stay aligned. */
+@media (min-width: 701px) {
+  body[data-theme="studio"] { --pe-shell-dock-bottom: env(safe-area-inset-bottom, 0px); }
+  body[data-theme="studio"] .topbar .tool-group.primary-tools {
+    border-bottom-width: 0;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  /* Measured layouts (narrow or portrait screens) centred the dock on a taller
+     row, which lifted it well above the edge. Bottom-align the dock and the
+     corner clusters instead. */
+  body[data-theme="studio"][data-shell-dock-layout] .topbar .tool-group.primary-tools { bottom: var(--pe-shell-dock-bottom); }
+  body[data-theme="studio"][data-shell-dock-layout] .shell-geometry {
+    --pe-shell-view-bottom: var(--pe-shell-corner-bottom);
+    --pe-shell-ai-bottom: var(--pe-shell-corner-bottom);
+  }
+}
+
+/* Tutor fork (2026-11-11): the strike tool button (added by script in tutor mode) uses the
+   same filled look as the current tool while it is on. */
+body[data-theme="studio"] .primary-tools #tutorStrikeBtn.active {
+  color: #fff;
+  border-color: transparent;
+  background: var(--pe-accent, var(--studio-accent));
+  box-shadow: none;
+}
+body[data-theme="studio"] .primary-tools #tutorStrikeBtn.active svg path[stroke] { stroke: #fff; }
+
+/* Tutor fork: the PenEcho Agent is closed server-side in tutor mode; hide its entry points.
+   #canvasAgentControl stays: it also holds the MCP status button. */
+:root[data-tutor-mode] :is(#canvasAgentToggle, #canvasAgentHome, #canvasAgentPanel, #canvasWelcomeAgent,
+  #studioNavigatorAgentTab, #studioNavigatorAgentPanel) { display: none !important; }
+
+/* Tutor fork: student view (tablets; the teacher's localhost keeps the full interface).
+   Hidden: cloud and sharing, the welcome examples, the AI settings cluster (students use the
+   Check / Hint bar), and dock tools that are not for answering a question (view mode, lasso,
+   text, shapes, image, clipboard). Kept: hand, pen, eraser, strike, colour, size, undo/redo,
+   zoom, the canvas list, MCP status and Settings. */
+:root[data-tutor-student] :is(#shareCanvasBtn, #cloudAccountBtn, #playgroundToggle, #canvasWelcome, #aiToolsSection,
+  #canvasViewBtn, #lassoToolBtn, #textToolBtn, #assistToolsBtn, #imagePickerBtn, #clipboardCopyBtn,
+  #canvasMoreMenu [data-shell-forward="#historyNotesNav"], #canvasMoreMenu [data-open-examples],
+  #canvasMoreMenu [data-shell-forward="#exportPngBtn"], #canvasMoreMenu [data-shell-forward="#clipboardCopyBtn"]) { display: none !important; }
+#tutorNewCanvasBtn {
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  color: #fff;
+  background: var(--pe-accent, var(--studio-accent, #4338ca));
+  font: 600 13px/1 inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Tutor fork: student windows (src/client/app/tutor-windows.js). The canvas is the answer
+   area; Menu and Question float above it, are dragged by their title bars and fold on a tap. */
+.tutor-window {
+  position: fixed;
+  z-index: 50;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 24px);
+  border: 1px solid var(--studio-line, #d9dce3);
+  border-radius: 12px;
+  color: var(--ink, #1f2937);
+  background: var(--studio-panel, #fff);
+  box-shadow: 0 6px 24px rgb(15 23 42 / 14%);
+  font: 14px/1.4 system-ui, sans-serif;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#tutorMenuWindow { width: 216px; }
+#tutorQuestionWindow { width: min(460px, calc(100vw - 260px)); min-width: 200px; }
+.tutor-window-bar {
+  display: flex;
+  min-height: 40px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  cursor: grab;
+  touch-action: none;
+}
+.tutor-window:not([data-folded]) .tutor-window-bar { border-bottom: 1px solid var(--studio-hairline, #e8eaef); }
+.tutor-window-grip {
+  width: 10px;
+  height: 16px;
+  flex: 0 0 auto;
+  opacity: .45;
+  background: radial-gradient(circle, currentColor 1.2px, transparent 1.6px) 0 0 / 5px 5px;
+}
+.tutor-window-title { flex: 0 0 auto; font-weight: 650; }
+.tutor-window-note {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1 1 auto;
+  color: var(--studio-muted, #6b7280);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tutor-window-fold {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin: 0 4px 3px;
+  border: solid currentColor;
+  border-width: 0 1.6px 1.6px 0;
+  opacity: .6;
+  transform: rotate(45deg);
+}
+.tutor-window[data-folded] .tutor-window-fold { margin-bottom: 0; transform: rotate(-45deg); }
+.tutor-window[data-folded] :is(.tutor-window-body, .tutor-window-resize) { display: none !important; }
+#tutorMenuWindow:not([data-folded]) .tutor-window-note { visibility: hidden; }
+.tutor-window-body { overflow: auto; min-height: 0; padding: 10px; touch-action: pan-y; }
+#tutorMenuWindow .tutor-window-body { display: flex; flex-direction: column; gap: 8px; }
+.tutor-window-label { color: var(--studio-muted, #6b7280); font-size: 12px; }
+.tutor-window-pages { display: flex; overflow-y: auto; max-height: 176px; flex: 0 0 auto; flex-direction: column; gap: 2px; touch-action: pan-y; }
+.tutor-window button {
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--studio-line, #d9dce3);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.tutor-window button.tutor-window-page {
+  overflow: hidden;
+  flex: 0 0 auto;
+  border-color: transparent;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tutor-window button.tutor-window-page[aria-current] { color: var(--pe-accent-label, var(--studio-accent-strong, #4338ca)); background: var(--pe-selected, var(--studio-accent-soft, #eef2ff)); font-weight: 600; }
+.tutor-window button.tutor-window-primary { border-color: transparent; color: #fff; background: var(--pe-accent, var(--studio-accent, #4338ca)); font-weight: 600; }
+.tutor-window-row { display: flex; gap: 8px; }
+.tutor-window-row[hidden] { display: none; }
+.tutor-window-row > button { min-width: 0; flex: 1 1 0; }
+.tutor-window-link { display: flex; align-items: center; gap: 6px; color: var(--studio-muted, #6b7280); font-size: 12.5px; }
+.tutor-window-link::before { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #9ca3af; content: ""; }
+.tutor-window-link:not([data-state="off"])::before { background: #16a34a; }
+.tutor-window-status { color: var(--studio-muted, #6b7280); font-size: 12.5px; overflow-wrap: anywhere; }
+.tutor-window-status:empty { display: none; }
+.tutor-window-question { display: block; max-width: 100%; height: auto; }
+.tutor-window-question-text { margin: 0; font-size: 18px; white-space: pre-wrap; }
+.tutor-window-empty { margin: 0; color: var(--studio-muted, #6b7280); }
+.tutor-window-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 0 0 12px;
+  background: linear-gradient(135deg, transparent 62%, color-mix(in srgb, currentColor 35%, transparent) 62% 68%, transparent 68% 78%, color-mix(in srgb, currentColor 35%, transparent) 78% 84%, transparent 84%);
+  cursor: ew-resize;
+  touch-action: none;
+}
+/* With the windows in place the title bar is not needed on a student's tablet. */
+@media (min-width: 701px) {
+  :root[data-tutor-student] body[data-theme="studio"] { --pe-shell-bar-h: 0px; }
+  :root[data-tutor-student] body[data-theme="studio"] .topbar { height: 0; min-height: 0; padding: 0; border: 0; }
+  :root[data-tutor-student] body[data-theme="studio"] .topbar :is(.brand, .canvas-document-meta, #aiStatusArea, .canvas-agent-toolbar-home,
+    .canvas-file-actions, #canvasMoreControl, #settingsBtn, #studioNavigatorToggle, .toolbar-leading-divider, #tutorNewCanvasBtn) { display: none !important; }
+}
+
+/* Tutor fork: colour in the student windows. Title bars carry the accent, the question window
+   shows lesson progress as dots (green: checked correct, amber: checked, not yet right,
+   accent ring: this page), and a correct check plays a short cheer. */
+.tutor-window-bar { border-radius: 11px 11px 0 0; background: color-mix(in srgb, var(--pe-accent, #4f46e5) 9%, var(--studio-panel, #fff)); }
+.tutor-window[data-folded] .tutor-window-bar { border-radius: 11px; }
+.tutor-window-title { color: var(--pe-accent, #4f46e5); }
+#tutorQuestionWindow .tutor-window-note {
+  flex: 0 1 auto;
+  padding: 2px 9px;
+  border-radius: 99px;
+  color: #fff;
+  background: var(--pe-accent, #4f46e5);
+  font-weight: 600;
+}
+#tutorQuestionWindow .tutor-window-note:empty { display: none; }
+#tutorQuestionWindow .tutor-window-fold { margin-left: auto; }
+.tutor-window-steps { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; padding: 10px 10px 0; }
+.tutor-window-steps[hidden], .tutor-window[data-folded] .tutor-window-steps { display: none; }
+.tutor-window button.tutor-window-step {
+  width: 28px;
+  min-height: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1.5px solid var(--studio-line, #d9dce3);
+  border-radius: 50%;
+  color: var(--studio-muted, #6b7280);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.tutor-window button.tutor-window-step[data-state="open"] { border-color: transparent; color: var(--ink, #1f2937); background: color-mix(in srgb, var(--studio-muted, #6b7280) 18%, transparent); }
+.tutor-window button.tutor-window-step[data-state="ok"] { border-color: transparent; color: #fff; background: #16a34a; }
+.tutor-window button.tutor-window-step[data-state="try"] { border-color: transparent; color: #fff; background: #d97706; }
+.tutor-window button.tutor-window-step[data-state="ahead"] { border-style: dashed; opacity: .6; cursor: default; }
+.tutor-window button.tutor-window-step[aria-current] { box-shadow: 0 0 0 2px var(--studio-panel, #fff), 0 0 0 4px var(--pe-accent, #4f46e5); }
+.tutor-window-colors { display: flex; gap: 8px; }
+.tutor-window button.tutor-window-swatch { width: 26px; min-height: 26px; height: 26px; padding: 0; border: 0; border-radius: 50%; }
+.tutor-window button.tutor-window-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--studio-panel, #fff), 0 0 0 4px currentColor; }
+.tutor-window-cheer {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  display: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #16a34a;
+  box-shadow: 0 4px 14px rgb(22 163 74 / 45%);
+  pointer-events: none;
+}
+.tutor-window-cheer::after {
+  position: absolute;
+  top: 11px;
+  left: 16px;
+  width: 9px;
+  height: 17px;
+  border: solid #fff;
+  border-width: 0 3.5px 3.5px 0;
+  content: "";
+  transform: rotate(45deg);
+}
+.tutor-window[data-cheer] { animation: tutorCheerGlow 2.2s ease-out; }
+.tutor-window[data-cheer] .tutor-window-cheer { display: block; animation: tutorCheerPop 2.2s cubic-bezier(.2, 1.4, .4, 1) both; }
+@keyframes tutorCheerGlow {
+  0%, 60% { border-color: #16a34a; box-shadow: 0 0 0 4px rgb(22 163 74 / 28%), 0 6px 24px rgb(15 23 42 / 14%); }
+  100% { box-shadow: 0 6px 24px rgb(15 23 42 / 14%); }
+}
+@keyframes tutorCheerPop {
+  0% { opacity: 0; transform: scale(.2); }
+  18%, 75% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(.9); }
+}
+.tutor-window-about { color: var(--studio-muted, #6b7280); font-size: 11.5px; text-decoration: underline; }
+.tutor-window-about[hidden] { display: none; }

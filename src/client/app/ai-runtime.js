@@ -440,6 +440,8 @@
             ...(widgetEditContext ? { widgetEdit:widgetEditContext } : {}),
             ...(typedInput ? { typedInput } : {}),
             ...(!automatic && typeof requestOptions.suggestion === "string" ? { suggestion:requestOptions.suggestion } : {}),
+            // Fork (tutor mode): the page id lets the server count staged checks per question.
+            ...(globalThis.PENECHO_CONFIG?.tutorMode === true && typeof canvasDocuments !== "undefined" && canvasDocuments.activeId ? { tutorPage:String(canvasDocuments.activeId).slice(0, 96) } : {}),
             ...(!automatic && requestOptions.suggestion === "vivid" ? { illustrationStyle:PenEchoIllustrationStyle.normalize(state.illustrationStyle), illustrationBackground:PenEchoIllustrationStyle.normalizeBackground(state.illustrationBackground) } : {}),
             ...(sourceInk ? { sourceInk } : {}),
             ...(sketchInk ? { sketchInk } : {}),
@@ -1031,7 +1033,24 @@
         if (c.tool === "write_text") {
           if (!n(c.x) || !n(c.y) || typeof c.text !== "string" || !Number.isFinite(c.maxWidth)) return null;
           c.text = c.text.slice(0, AI_TEXT_MAX_LENGTH);
-          c.fontSize = matchedTextFontSize(c.fontSize, c.text);
+          if (c.tutorLayout === true) {
+            // Fork: the student windows show how each page's check went.
+            if (typeof tutorNoteCheck === "function") tutorNoteCheck(c.text);
+            // Fork: a tutor reply is sized from the student's own handwriting (a little over half
+            // its height, since print is denser than handwriting), kept between about 15 and 26
+            // screen px. Without recent ink to measure it is about 21 screen px.
+            const unit = 1 / Math.max(0.03, state.scale),
+              ink = typeof tutorInkHeight === "function" ? tutorInkHeight() : 0,
+              size = Math.max(15 * unit, Math.min(26 * unit, ink > 0 ? ink * 0.55 : 21 * unit)),
+              view = typeof viewportRect === "function" ? viewportRect() : null,
+              margin = size * 0.75;
+            c.fontSize = size;
+            c.maxWidth = size * Math.max(8, Math.min(26, +c.tutorWidthEm || 22));
+            if (view && view.w > 0) {
+              c.maxWidth = Math.min(c.maxWidth, Math.max(size * 8, view.w - margin * 2));
+              c.x = Math.max(view.x + margin, Math.min(c.x, view.x + view.w - margin - c.maxWidth));
+            }
+          } else c.fontSize = matchedTextFontSize(c.fontSize, c.text);
           c.maxWidth = Math.max(c.fontSize, Math.min(SIZE - c.x, c.maxWidth));
           c.lineHeight = Math.max(1, Math.min(2.2, +c.lineHeight || 1.35));
           c.color = aiColor;
@@ -1207,7 +1226,7 @@
           y = c.y,
           pendingCommand = c;
         if (c.tool === "write_text") {
-          image = textImage(c.text, c.fontSize, c.color, c.maxWidth, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+          image = await aiTextImage(c);
         } else if (c.tool === "draw_formula") {
           image = await formulaImage(c.latex, c.fontSize, c.color);
         } else if (c.tool === "plot_function") {
@@ -1252,7 +1271,7 @@
       x = c.x,
       y = c.y,
       pendingCommand = c;
-    if (c.tool === "write_text") image = textImage(c.text, c.fontSize, c.color, c.maxWidth, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+    if (c.tool === "write_text") image = await aiTextImage(c);
     else if (c.tool === "draw_formula") image = await formulaImage(c.latex, c.fontSize, c.color);
     else if (c.tool === "plot_function") {
       const preparedPlot = await plotObjectImage(c);
@@ -1321,6 +1340,41 @@
     return Math.min(Math.max(0.1, requested), 4096 / width, 4096 / height, Math.sqrt(12000000 / (width * height)));
   }
 
+  // Fork (tutor mode): AI text that carries inline math or bold is typeset as mixed text, so
+  // formulas sit in the sentence at the sentence's size instead of as separate giant objects.
+  function aiTextIsMixed(c) {
+    return globalThis.PENECHO_CONFIG?.tutorMode === true && Boolean(MIXED_TEXT?.parse) && (c?.tutorLayout === true || /\$[^$\n]+\$|\\\(|\*\*[^*\n]+\*\*/.test(String(c?.text || "")));
+  }
+  // Fork (tutor replies): colour and size follow what the line is for. The verdict line is
+  // larger and green / red / amber, the phrase to notice is orange, side remarks are small and
+  // grey, and the body keeps the user's AI colour.
+  const TUTOR_TONE = { ok: "#15803d", bad: "#dc2626", hint: "#b45309", key: "#c2410c", muted: "#6b7280", verdictScale: 1.18, mutedScale: 0.86 };
+  async function aiTextImage(c, width = c.maxWidth) {
+    if (aiTextIsMixed(c)) {
+      try {
+        return await mixedTextImage(c.text.slice(0, AI_TEXT_MAX_LENGTH), c.fontSize, c.color, width, c.lineHeight, state.aiFont, sharpRenderRatio(), c.tutorLayout === true);
+      } catch (error) {
+        console.warn("Mixed AI text fallback", error);
+      }
+    }
+    return textImage(c.text, c.fontSize, c.color, width, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+  }
+  // Re-wrap a draft's text after its width changed. Mixed text renders asynchronously, so a
+  // token drops results that a newer drag has already replaced.
+  function reflowDraftText(target) {
+    const c = target.textCommand,
+      apply = (image) => {
+        target.image = image;
+        if (!target.heightLocked) target.layoutHeight = image.logicalHeight || image.height;
+      };
+    if (!aiTextIsMixed(c)) return apply(textImage(c.text, c.fontSize, c.color, target.layoutWidth, c.lineHeight));
+    const token = (target.reflowToken = (target.reflowToken || 0) + 1);
+    aiTextImage(c, target.layoutWidth).then((image) => {
+      if (target.reflowToken !== token) return;
+      apply(image);
+      render();
+    }, () => {});
+  }
   function textRasterMetrics(text, f, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, maxLength = AI_TEXT_MAX_LENGTH, pixelRatio = 1) {
     const content = text.slice(0, maxLength),
       fontFamily = family || AI_FONT_DEFAULT;
@@ -1359,8 +1413,10 @@
   function layoutText(content, context, maxWidth) {
     const lines = [];
     for (const explicitLine of content.replace(/\r/g, "").split("\n")) {
-      const parts = explicitLine.match(/\s+|\S+/g) || [""],
+      // Fork: break between CJK characters (never before closing punctuation), not only at spaces.
+      const parts = MIXED_TEXT?.breakUnits ? MIXED_TEXT.breakUnits(explicitLine) : explicitLine.match(/\s+|\S+/g) || [""],
         wrapped = [];
+      if (!parts.length) parts.push("");
       let line = "";
       const push = () => {
         wrapped.push(line);
@@ -1372,6 +1428,7 @@
           continue;
         }
         if (line) push();
+        if (wrapped.length && /^\s+$/.test(part)) continue;
         if (context.measureText(part).width <= maxWidth) {
           line = part;
           continue;
@@ -1409,7 +1466,7 @@
     if (chunk) items.push({ type: "text", text: chunk, font, fontSize, width: context.measureText(chunk).width });
     return items;
   }
-  async function mixedTextImage(text, fontSize, color, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, pixelRatio = sharpRenderRatio()) {
+  async function mixedTextImage(text, fontSize, color, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, pixelRatio = sharpRenderRatio(), tone = false) {
     if (!MIXED_TEXT?.parse) return textImage(text, fontSize, color, maxWidth, lineHeight, family, TEXT_INPUT_MAX_LENGTH, pixelRatio);
     const parsed = MIXED_TEXT.parse(text.slice(0, TEXT_INPUT_MAX_LENGTH)),
       resolvedFamily = family || AI_FONT_DEFAULT,
@@ -1419,49 +1476,91 @@
       preparedLines = [];
     let formulaCount = 0;
     for (const line of parsed.lines) {
-      const lineFontSize = Math.max(1, fontSize * (line.fontScale || 1)),
+      let lineColor = color,
+        lineScale = line.fontScale || 1,
+        lineSegments = line.segments;
+      if (tone && line.kind === "heading") {
+        const lead = line.segments.map((segment) => segment.text || "").join("").trimStart();
+        lineColor = /^[\u2713\u2714\u221a]/.test(lead) ? TUTOR_TONE.ok : /^[\u2717\u2718\u00d7]/.test(lead) ? TUTOR_TONE.bad : TUTOR_TONE.hint;
+        lineScale = TUTOR_TONE.verdictScale;
+      } else if (tone && line.kind === "quote") {
+        lineSegments = line.segments.slice(1).map((segment) => ({ ...segment, italic: false }));
+        lineColor = TUTOR_TONE.muted;
+        lineScale = TUTOR_TONE.mutedScale;
+      }
+      const lineFontSize = Math.max(1, fontSize * lineScale),
         segments = [];
-      for (const segment of line.segments) {
+      for (const source of lineSegments) {
+        const segment = { ...source, color: tone && source.bold && line.kind === "paragraph" ? TUTOR_TONE.key : lineColor };
         if (segment.type !== "math" || formulaCount >= 64 || segment.tex.length > MIXED_FORMULA_MAX_LENGTH) {
           segments.push(segment.type === "math" ? { ...segment, type: "text", text: segment.raw } : segment);
           continue;
         }
         formulaCount++;
-        const cacheKey = `${lineFontSize}\n${color}\n${segment.tex}`;
-        if (!formulaCache.has(cacheKey)) formulaCache.set(cacheKey, mathJaxImage(segment.tex, lineFontSize, color, pixelRatio));
+        const cacheKey = `${lineFontSize}\n${segment.color}\n${segment.tex}`;
+        if (!formulaCache.has(cacheKey)) formulaCache.set(cacheKey, naturalMathImage(segment.tex, lineFontSize, segment.color, pixelRatio));
         const formula = await formulaCache.get(cacheKey);
         if (formula.image) segments.push({ type: "math", image: formula.image, raw: segment.raw });
         else segments.push({ ...segment, type: "text", text: segment.raw });
       }
       preparedLines.push({ ...line, lineFontSize, segments });
     }
-    const rows = [];
+    // Fork: rows are filled unit by unit (see MIXED_TEXT.breakUnits) and aligned on a common
+    // baseline, so inline formulas sit on the text line instead of floating in the row.
+    const rows = [],
+      units = (text) => MIXED_TEXT.breakUnits ? MIXED_TEXT.breakUnits(text) : text.match(/\s+|\S+/g) || [],
+      closing = (text) => Boolean(MIXED_TEXT.startsWithClosingPunctuation?.(text));
     for (const line of preparedLines) {
-      const defaultHeight = line.lineFontSize * lineHeight;
-      let row = { items: [], width: 0, height: defaultHeight };
+      const size = line.lineFontSize,
+        newRow = () => ({ items: [], width: 0, height: size * lineHeight, ascent: size * 0.88, descent: size * 0.22 });
+      let row = newRow(),
+        wrapped = false;
       const finishRow = () => {
+        while (row.items.at(-1)?.space) row.items.pop();
+        const last = row.items.at(-1);
+        row.width = last ? last.x + last.width : 0;
+        for (const item of row.items) {
+          row.ascent = Math.max(row.ascent, item.ascent);
+          row.descent = Math.max(row.descent, item.descent);
+        }
+        row.height = Math.max(row.height, row.ascent + row.descent + size * 0.16);
         rows.push(row);
-        row = { items: [], width: 0, height: defaultHeight };
+        row = newRow();
       };
-      const addItem = (item) => {
-        if (row.items.length && row.width + item.width > widthLimit) finishRow();
+      const place = (item) => {
         item.x = row.width;
         row.items.push(item);
         row.width += item.width;
-        row.height = Math.max(row.height, item.height || item.fontSize * lineHeight);
+      };
+      const addItem = (item) => {
+        if (item.space && wrapped && !row.items.length) return;
+        if (row.items.length && row.width + item.width > widthLimit) {
+          if (item.space) {
+            finishRow();
+            wrapped = true;
+            return;
+          }
+          // Closing punctuation never starts a row: it takes the previous unit down with it.
+          const carried = item.glue && row.items.length > 1 && !row.items.at(-1).space ? row.items.pop() : null;
+          if (carried) row.width -= carried.width;
+          finishRow();
+          wrapped = true;
+          if (carried) place(carried);
+        }
+        place(item);
       };
       for (const segment of line.segments) {
         if (segment.type === "math") {
           const sourceWidth = segment.image.logicalWidth || segment.image.width,
             sourceHeight = segment.image.logicalHeight || segment.image.height,
-            scale = Math.min(1, widthLimit / Math.max(1, sourceWidth));
-          addItem({ type: "math", image: segment.image, width: sourceWidth * scale, height: sourceHeight * scale });
+            scale = Math.min(1, widthLimit / Math.max(1, sourceWidth)),
+            ascent = Number.isFinite(segment.image.ascent) ? segment.image.ascent * scale : sourceHeight * scale * 0.78;
+          addItem({ type: "math", image: segment.image, width: sourceWidth * scale, height: sourceHeight * scale, ascent, descent: sourceHeight * scale - ascent });
           continue;
         }
-        const parts = segment.text.match(/\s+|\S+/g) || [];
-        for (const part of parts) {
-          const items = splitMixedTextPart(part, segment, line.lineFontSize, resolvedFamily, widthLimit, probe);
-          items.forEach(addItem);
+        for (const part of units(segment.text)) {
+          const items = splitMixedTextPart(part, segment, size, resolvedFamily, widthLimit, probe);
+          items.forEach((item, index) => addItem({ ...item, color: segment.color, ascent: size * 0.88, descent: size * 0.22, space: /^\s+$/.test(item.text), glue: index === 0 && closing(item.text) }));
         }
       }
       finishRow();
@@ -1477,15 +1576,17 @@
       context = image.getContext("2d");
     context.setTransform(rasterScale, 0, 0, rasterScale, 0, 0);
     context.fillStyle = color || "#2563eb";
-    context.textBaseline = "top";
+    context.textBaseline = "alphabetic";
     let y = padding;
     for (const row of rows) {
+      const baseline = y + (row.height - row.ascent - row.descent) / 2 + row.ascent;
       for (const item of row.items) {
         const x = padding + item.x;
-        if (item.type === "math") context.drawImage(item.image, x, y + (row.height - item.height) / 2, item.width, item.height);
+        if (item.type === "math") context.drawImage(item.image, x, baseline - item.ascent, item.width, item.height);
         else {
           context.font = item.font;
-          context.fillText(item.text, x, y + (row.height - item.fontSize) / 2);
+          context.fillStyle = item.color || color || "#2563eb";
+          context.fillText(item.text, x, baseline);
         }
       }
       y += row.height;
@@ -1498,7 +1599,22 @@
     image.revealRowHeight = naturalHeight / Math.max(1, rows.length);
     return image;
   }
-  async function mathJaxImage(latex, fontSize, color, pixelRatio = sharpRenderRatio()) {
+  // Fork: natural=true sizes the formula from MathJax's own metrics (1000 viewBox units = 1em)
+  // and reports its baseline, so inline math matches the surrounding text. The upstream mode
+  // (every formula scaled to 1.35em tall, whatever it contains) is kept for draw_formula.
+  const naturalFormulaCache = new Map();
+  function naturalMathImage(latex, fontSize, color, pixelRatio) {
+    const key = [fontSize, color, pixelRatio, latex].join(String.fromCharCode(10));
+    if (!naturalFormulaCache.has(key)) {
+      if (naturalFormulaCache.size >= 300) naturalFormulaCache.clear();
+      // Text-style fractions are too small to read on a tablet; set them full size.
+      const made = mathJaxImage(latex.replace(/\\frac(?![A-Za-z])/g, "\\dfrac"), fontSize, color, pixelRatio, true);
+      naturalFormulaCache.set(key, made);
+      made.then((result) => { if (!result.image) naturalFormulaCache.delete(key); });
+    }
+    return naturalFormulaCache.get(key);
+  }
+  async function mathJaxImage(latex, fontSize, color, pixelRatio = sharpRenderRatio(), natural = false) {
     if (!window.MathJax?.tex2svgPromise) return { image: null, error: Error("MathJax unavailable") };
     try {
       const node = await window.MathJax.tex2svgPromise(latex, {
@@ -1510,8 +1626,9 @@
       if (!svg) throw Error("No MathJax SVG");
       const viewBox = (svg.getAttribute("viewBox") || "").trim().split(/\s+/).map(Number),
         ratio = viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0 ? viewBox[2] / viewBox[3] : Math.max(0.7, latex.length * 0.65),
-        logicalHeight = Math.max(1, Math.ceil(fontSize * 1.35)),
-        logicalWidth = Math.max(1, Math.ceil(logicalHeight * ratio)),
+        metric = natural && viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0,
+        logicalHeight = Math.max(1, Math.ceil(metric ? viewBox[3] / 1000 * fontSize : fontSize * 1.35)),
+        logicalWidth = Math.max(1, Math.ceil(metric ? viewBox[2] / 1000 * fontSize : logicalHeight * ratio)),
         rasterScale = rasterScaleFor(logicalWidth, logicalHeight, pixelRatio),
         rasterWidth = Math.max(1, Math.ceil(logicalWidth * rasterScale)),
         rasterHeight = Math.max(1, Math.ceil(logicalHeight * rasterScale));
@@ -1532,6 +1649,7 @@
         image.logicalHeight = logicalHeight;
         image.revealRows = [logicalWidth];
         image.revealRowHeight = logicalHeight;
+        if (metric) image.ascent = Math.max(0, Math.min(logicalHeight, -viewBox[1] / 1000 * fontSize));
         return { image, error: null };
       } finally {
         URL.revokeObjectURL(url);
@@ -2457,8 +2575,7 @@
         if (item.textCommand) {
           const layoutWidth=Math.max(item.textCommand.fontSize,Math.min((SIZE-item.x)/item.scaleX,(q.x-item.x)/item.scaleX));
           item.layoutWidth=layoutWidth;
-          item.image=textImage(item.textCommand.text,item.textCommand.fontSize,item.textCommand.color,item.layoutWidth,item.textCommand.lineHeight);
-          if(!item.heightLocked)item.layoutHeight=item.image.logicalHeight||item.image.height;
+          reflowDraftText(item);
         } else {
           const baseWidth = box.w / item.scaleX;
           item.scaleX = Math.max(40 / baseWidth, Math.min((SIZE - item.x) / baseWidth, (q.x - item.x) / baseWidth));
@@ -2492,8 +2609,7 @@
       if (p.textCommand) {
         const layoutWidth=Math.max(p.textCommand.fontSize,Math.min((SIZE-p.x)/p.scaleX,(q.x-p.x)/p.scaleX));
         p.layoutWidth=layoutWidth;
-        p.image=textImage(p.textCommand.text,p.textCommand.fontSize,p.textCommand.color,p.layoutWidth,p.textCommand.lineHeight);
-        if(!p.heightLocked)p.layoutHeight=p.image.logicalHeight||p.image.height;
+        reflowDraftText(p);
       } else {
         const baseWidth = draftBounds(p).w / p.scaleX;
         p.scaleX = Math.max(40 / baseWidth, Math.min((SIZE - p.x) / baseWidth, (q.x - p.x) / baseWidth));

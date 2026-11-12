@@ -3822,7 +3822,9 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     if (font === AI_FONT_HANDWRITTEN_LEGACY) return AI_FONT_HANDWRITTEN;
     return AI_FONT_OPTIONS.has(font) ? font : TEXT_EDITOR_FONT_FAMILY;
   }
-  const storedPrimaryLanguage = localStorage.getItem("penecho-language"),
+  // Fork (tutor mode): a Chinese-language device that never chose a language starts in Chinese.
+  const storedPrimaryLanguage = localStorage.getItem("penecho-language")
+      || (globalThis.PENECHO_CONFIG?.tutorMode === true && /^zh/i.test(globalThis.navigator?.language || "") ? "zh" : null),
     storedLegacyLanguage = localStorage.getItem("ghostboard-language"),
     storedTheme = localStorage.getItem("penecho-theme") || localStorage.getItem("ghostboard-theme"),
     storedStudioPalette = localStorage.getItem("penecho-studio-palette"),
@@ -4731,7 +4733,15 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     });
     return true;
   }
+  // Fork (tutor mode): a student's tablet gets a reduced interface. The teacher's own computer
+  // (opened as localhost) keeps everything for setup; "?student=1" previews the student view there.
+  function tutorStudentUi() {
+    const place = globalThis.location;
+    return globalThis.PENECHO_CONFIG?.tutorMode === true
+      && (/[?&]student=1\b/.test(place?.search || "") || !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(place?.hostname || "localhost"));
+  }
   function maybeStartFeatureTour(retry = false) {
+    if (tutorStudentUi()) return false;
     if(window.PENECHO_CONFIG?.browserDraftId||CANVAS_COMPANION_REQUESTED)return false;
     if (featureTour.active || changelog.active || (featureTour.autoChecked && !retry)) return false;
     featureTour.autoChecked = true;
@@ -4787,6 +4797,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     } catch {}
   }
   function maybeShowChangelog(force = false) {
+    if (tutorStudentUi() && !force) return false;
     if((window.PENECHO_CONFIG?.browserDraftId||CANVAS_COMPANION_REQUESTED)&&!force)return false;
     if (!changelogLayer || !changelogDialog || changelog.active || featureTour.active || !pluginPopover.hidden || (!force && changelogSeen())) return false;
     hideAutoDelayControl();
@@ -6946,7 +6957,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     mcpRenderSettings();
     if(typeof canvasDocuments!=="undefined")canvasDocumentsRender();
     document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
-    document.title = t("title");
+    document.title = globalThis.PENECHO_CONFIG?.productName || t("title");
     document.querySelectorAll("[data-i18n]").forEach((node) => (node.textContent = t(node.dataset.i18n)));
     document.querySelectorAll("[data-i18n-aria]").forEach((node) => node.setAttribute("aria-label", t(node.dataset.i18nAria)));
     document.querySelectorAll("[data-i18n-title]").forEach((node) => node.setAttribute("title", t(node.dataset.i18nTitle)));
@@ -19255,6 +19266,8 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
             ...(widgetEditContext ? { widgetEdit:widgetEditContext } : {}),
             ...(typedInput ? { typedInput } : {}),
             ...(!automatic && typeof requestOptions.suggestion === "string" ? { suggestion:requestOptions.suggestion } : {}),
+            // Fork (tutor mode): the page id lets the server count staged checks per question.
+            ...(globalThis.PENECHO_CONFIG?.tutorMode === true && typeof canvasDocuments !== "undefined" && canvasDocuments.activeId ? { tutorPage:String(canvasDocuments.activeId).slice(0, 96) } : {}),
             ...(!automatic && requestOptions.suggestion === "vivid" ? { illustrationStyle:PenEchoIllustrationStyle.normalize(state.illustrationStyle), illustrationBackground:PenEchoIllustrationStyle.normalizeBackground(state.illustrationBackground) } : {}),
             ...(sourceInk ? { sourceInk } : {}),
             ...(sketchInk ? { sketchInk } : {}),
@@ -19846,7 +19859,24 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
         if (c.tool === "write_text") {
           if (!n(c.x) || !n(c.y) || typeof c.text !== "string" || !Number.isFinite(c.maxWidth)) return null;
           c.text = c.text.slice(0, AI_TEXT_MAX_LENGTH);
-          c.fontSize = matchedTextFontSize(c.fontSize, c.text);
+          if (c.tutorLayout === true) {
+            // Fork: the student windows show how each page's check went.
+            if (typeof tutorNoteCheck === "function") tutorNoteCheck(c.text);
+            // Fork: a tutor reply is sized from the student's own handwriting (a little over half
+            // its height, since print is denser than handwriting), kept between about 15 and 26
+            // screen px. Without recent ink to measure it is about 21 screen px.
+            const unit = 1 / Math.max(0.03, state.scale),
+              ink = typeof tutorInkHeight === "function" ? tutorInkHeight() : 0,
+              size = Math.max(15 * unit, Math.min(26 * unit, ink > 0 ? ink * 0.55 : 21 * unit)),
+              view = typeof viewportRect === "function" ? viewportRect() : null,
+              margin = size * 0.75;
+            c.fontSize = size;
+            c.maxWidth = size * Math.max(8, Math.min(26, +c.tutorWidthEm || 22));
+            if (view && view.w > 0) {
+              c.maxWidth = Math.min(c.maxWidth, Math.max(size * 8, view.w - margin * 2));
+              c.x = Math.max(view.x + margin, Math.min(c.x, view.x + view.w - margin - c.maxWidth));
+            }
+          } else c.fontSize = matchedTextFontSize(c.fontSize, c.text);
           c.maxWidth = Math.max(c.fontSize, Math.min(SIZE - c.x, c.maxWidth));
           c.lineHeight = Math.max(1, Math.min(2.2, +c.lineHeight || 1.35));
           c.color = aiColor;
@@ -20022,7 +20052,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
           y = c.y,
           pendingCommand = c;
         if (c.tool === "write_text") {
-          image = textImage(c.text, c.fontSize, c.color, c.maxWidth, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+          image = await aiTextImage(c);
         } else if (c.tool === "draw_formula") {
           image = await formulaImage(c.latex, c.fontSize, c.color);
         } else if (c.tool === "plot_function") {
@@ -20067,7 +20097,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
       x = c.x,
       y = c.y,
       pendingCommand = c;
-    if (c.tool === "write_text") image = textImage(c.text, c.fontSize, c.color, c.maxWidth, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+    if (c.tool === "write_text") image = await aiTextImage(c);
     else if (c.tool === "draw_formula") image = await formulaImage(c.latex, c.fontSize, c.color);
     else if (c.tool === "plot_function") {
       const preparedPlot = await plotObjectImage(c);
@@ -20136,6 +20166,41 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     return Math.min(Math.max(0.1, requested), 4096 / width, 4096 / height, Math.sqrt(12000000 / (width * height)));
   }
 
+  // Fork (tutor mode): AI text that carries inline math or bold is typeset as mixed text, so
+  // formulas sit in the sentence at the sentence's size instead of as separate giant objects.
+  function aiTextIsMixed(c) {
+    return globalThis.PENECHO_CONFIG?.tutorMode === true && Boolean(MIXED_TEXT?.parse) && (c?.tutorLayout === true || /\$[^$\n]+\$|\\\(|\*\*[^*\n]+\*\*/.test(String(c?.text || "")));
+  }
+  // Fork (tutor replies): colour and size follow what the line is for. The verdict line is
+  // larger and green / red / amber, the phrase to notice is orange, side remarks are small and
+  // grey, and the body keeps the user's AI colour.
+  const TUTOR_TONE = { ok: "#15803d", bad: "#dc2626", hint: "#b45309", key: "#c2410c", muted: "#6b7280", verdictScale: 1.18, mutedScale: 0.86 };
+  async function aiTextImage(c, width = c.maxWidth) {
+    if (aiTextIsMixed(c)) {
+      try {
+        return await mixedTextImage(c.text.slice(0, AI_TEXT_MAX_LENGTH), c.fontSize, c.color, width, c.lineHeight, state.aiFont, sharpRenderRatio(), c.tutorLayout === true);
+      } catch (error) {
+        console.warn("Mixed AI text fallback", error);
+      }
+    }
+    return textImage(c.text, c.fontSize, c.color, width, c.lineHeight, state.aiFont, AI_TEXT_MAX_LENGTH, sharpRenderRatio());
+  }
+  // Re-wrap a draft's text after its width changed. Mixed text renders asynchronously, so a
+  // token drops results that a newer drag has already replaced.
+  function reflowDraftText(target) {
+    const c = target.textCommand,
+      apply = (image) => {
+        target.image = image;
+        if (!target.heightLocked) target.layoutHeight = image.logicalHeight || image.height;
+      };
+    if (!aiTextIsMixed(c)) return apply(textImage(c.text, c.fontSize, c.color, target.layoutWidth, c.lineHeight));
+    const token = (target.reflowToken = (target.reflowToken || 0) + 1);
+    aiTextImage(c, target.layoutWidth).then((image) => {
+      if (target.reflowToken !== token) return;
+      apply(image);
+      render();
+    }, () => {});
+  }
   function textRasterMetrics(text, f, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, maxLength = AI_TEXT_MAX_LENGTH, pixelRatio = 1) {
     const content = text.slice(0, maxLength),
       fontFamily = family || AI_FONT_DEFAULT;
@@ -20174,8 +20239,10 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
   function layoutText(content, context, maxWidth) {
     const lines = [];
     for (const explicitLine of content.replace(/\r/g, "").split("\n")) {
-      const parts = explicitLine.match(/\s+|\S+/g) || [""],
+      // Fork: break between CJK characters (never before closing punctuation), not only at spaces.
+      const parts = MIXED_TEXT?.breakUnits ? MIXED_TEXT.breakUnits(explicitLine) : explicitLine.match(/\s+|\S+/g) || [""],
         wrapped = [];
+      if (!parts.length) parts.push("");
       let line = "";
       const push = () => {
         wrapped.push(line);
@@ -20187,6 +20254,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
           continue;
         }
         if (line) push();
+        if (wrapped.length && /^\s+$/.test(part)) continue;
         if (context.measureText(part).width <= maxWidth) {
           line = part;
           continue;
@@ -20224,7 +20292,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     if (chunk) items.push({ type: "text", text: chunk, font, fontSize, width: context.measureText(chunk).width });
     return items;
   }
-  async function mixedTextImage(text, fontSize, color, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, pixelRatio = sharpRenderRatio()) {
+  async function mixedTextImage(text, fontSize, color, maxWidth = 900, lineHeight = 1.35, family = state.aiFont, pixelRatio = sharpRenderRatio(), tone = false) {
     if (!MIXED_TEXT?.parse) return textImage(text, fontSize, color, maxWidth, lineHeight, family, TEXT_INPUT_MAX_LENGTH, pixelRatio);
     const parsed = MIXED_TEXT.parse(text.slice(0, TEXT_INPUT_MAX_LENGTH)),
       resolvedFamily = family || AI_FONT_DEFAULT,
@@ -20234,49 +20302,91 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
       preparedLines = [];
     let formulaCount = 0;
     for (const line of parsed.lines) {
-      const lineFontSize = Math.max(1, fontSize * (line.fontScale || 1)),
+      let lineColor = color,
+        lineScale = line.fontScale || 1,
+        lineSegments = line.segments;
+      if (tone && line.kind === "heading") {
+        const lead = line.segments.map((segment) => segment.text || "").join("").trimStart();
+        lineColor = /^[\u2713\u2714\u221a]/.test(lead) ? TUTOR_TONE.ok : /^[\u2717\u2718\u00d7]/.test(lead) ? TUTOR_TONE.bad : TUTOR_TONE.hint;
+        lineScale = TUTOR_TONE.verdictScale;
+      } else if (tone && line.kind === "quote") {
+        lineSegments = line.segments.slice(1).map((segment) => ({ ...segment, italic: false }));
+        lineColor = TUTOR_TONE.muted;
+        lineScale = TUTOR_TONE.mutedScale;
+      }
+      const lineFontSize = Math.max(1, fontSize * lineScale),
         segments = [];
-      for (const segment of line.segments) {
+      for (const source of lineSegments) {
+        const segment = { ...source, color: tone && source.bold && line.kind === "paragraph" ? TUTOR_TONE.key : lineColor };
         if (segment.type !== "math" || formulaCount >= 64 || segment.tex.length > MIXED_FORMULA_MAX_LENGTH) {
           segments.push(segment.type === "math" ? { ...segment, type: "text", text: segment.raw } : segment);
           continue;
         }
         formulaCount++;
-        const cacheKey = `${lineFontSize}\n${color}\n${segment.tex}`;
-        if (!formulaCache.has(cacheKey)) formulaCache.set(cacheKey, mathJaxImage(segment.tex, lineFontSize, color, pixelRatio));
+        const cacheKey = `${lineFontSize}\n${segment.color}\n${segment.tex}`;
+        if (!formulaCache.has(cacheKey)) formulaCache.set(cacheKey, naturalMathImage(segment.tex, lineFontSize, segment.color, pixelRatio));
         const formula = await formulaCache.get(cacheKey);
         if (formula.image) segments.push({ type: "math", image: formula.image, raw: segment.raw });
         else segments.push({ ...segment, type: "text", text: segment.raw });
       }
       preparedLines.push({ ...line, lineFontSize, segments });
     }
-    const rows = [];
+    // Fork: rows are filled unit by unit (see MIXED_TEXT.breakUnits) and aligned on a common
+    // baseline, so inline formulas sit on the text line instead of floating in the row.
+    const rows = [],
+      units = (text) => MIXED_TEXT.breakUnits ? MIXED_TEXT.breakUnits(text) : text.match(/\s+|\S+/g) || [],
+      closing = (text) => Boolean(MIXED_TEXT.startsWithClosingPunctuation?.(text));
     for (const line of preparedLines) {
-      const defaultHeight = line.lineFontSize * lineHeight;
-      let row = { items: [], width: 0, height: defaultHeight };
+      const size = line.lineFontSize,
+        newRow = () => ({ items: [], width: 0, height: size * lineHeight, ascent: size * 0.88, descent: size * 0.22 });
+      let row = newRow(),
+        wrapped = false;
       const finishRow = () => {
+        while (row.items.at(-1)?.space) row.items.pop();
+        const last = row.items.at(-1);
+        row.width = last ? last.x + last.width : 0;
+        for (const item of row.items) {
+          row.ascent = Math.max(row.ascent, item.ascent);
+          row.descent = Math.max(row.descent, item.descent);
+        }
+        row.height = Math.max(row.height, row.ascent + row.descent + size * 0.16);
         rows.push(row);
-        row = { items: [], width: 0, height: defaultHeight };
+        row = newRow();
       };
-      const addItem = (item) => {
-        if (row.items.length && row.width + item.width > widthLimit) finishRow();
+      const place = (item) => {
         item.x = row.width;
         row.items.push(item);
         row.width += item.width;
-        row.height = Math.max(row.height, item.height || item.fontSize * lineHeight);
+      };
+      const addItem = (item) => {
+        if (item.space && wrapped && !row.items.length) return;
+        if (row.items.length && row.width + item.width > widthLimit) {
+          if (item.space) {
+            finishRow();
+            wrapped = true;
+            return;
+          }
+          // Closing punctuation never starts a row: it takes the previous unit down with it.
+          const carried = item.glue && row.items.length > 1 && !row.items.at(-1).space ? row.items.pop() : null;
+          if (carried) row.width -= carried.width;
+          finishRow();
+          wrapped = true;
+          if (carried) place(carried);
+        }
+        place(item);
       };
       for (const segment of line.segments) {
         if (segment.type === "math") {
           const sourceWidth = segment.image.logicalWidth || segment.image.width,
             sourceHeight = segment.image.logicalHeight || segment.image.height,
-            scale = Math.min(1, widthLimit / Math.max(1, sourceWidth));
-          addItem({ type: "math", image: segment.image, width: sourceWidth * scale, height: sourceHeight * scale });
+            scale = Math.min(1, widthLimit / Math.max(1, sourceWidth)),
+            ascent = Number.isFinite(segment.image.ascent) ? segment.image.ascent * scale : sourceHeight * scale * 0.78;
+          addItem({ type: "math", image: segment.image, width: sourceWidth * scale, height: sourceHeight * scale, ascent, descent: sourceHeight * scale - ascent });
           continue;
         }
-        const parts = segment.text.match(/\s+|\S+/g) || [];
-        for (const part of parts) {
-          const items = splitMixedTextPart(part, segment, line.lineFontSize, resolvedFamily, widthLimit, probe);
-          items.forEach(addItem);
+        for (const part of units(segment.text)) {
+          const items = splitMixedTextPart(part, segment, size, resolvedFamily, widthLimit, probe);
+          items.forEach((item, index) => addItem({ ...item, color: segment.color, ascent: size * 0.88, descent: size * 0.22, space: /^\s+$/.test(item.text), glue: index === 0 && closing(item.text) }));
         }
       }
       finishRow();
@@ -20292,15 +20402,17 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
       context = image.getContext("2d");
     context.setTransform(rasterScale, 0, 0, rasterScale, 0, 0);
     context.fillStyle = color || "#2563eb";
-    context.textBaseline = "top";
+    context.textBaseline = "alphabetic";
     let y = padding;
     for (const row of rows) {
+      const baseline = y + (row.height - row.ascent - row.descent) / 2 + row.ascent;
       for (const item of row.items) {
         const x = padding + item.x;
-        if (item.type === "math") context.drawImage(item.image, x, y + (row.height - item.height) / 2, item.width, item.height);
+        if (item.type === "math") context.drawImage(item.image, x, baseline - item.ascent, item.width, item.height);
         else {
           context.font = item.font;
-          context.fillText(item.text, x, y + (row.height - item.fontSize) / 2);
+          context.fillStyle = item.color || color || "#2563eb";
+          context.fillText(item.text, x, baseline);
         }
       }
       y += row.height;
@@ -20313,7 +20425,22 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
     image.revealRowHeight = naturalHeight / Math.max(1, rows.length);
     return image;
   }
-  async function mathJaxImage(latex, fontSize, color, pixelRatio = sharpRenderRatio()) {
+  // Fork: natural=true sizes the formula from MathJax's own metrics (1000 viewBox units = 1em)
+  // and reports its baseline, so inline math matches the surrounding text. The upstream mode
+  // (every formula scaled to 1.35em tall, whatever it contains) is kept for draw_formula.
+  const naturalFormulaCache = new Map();
+  function naturalMathImage(latex, fontSize, color, pixelRatio) {
+    const key = [fontSize, color, pixelRatio, latex].join(String.fromCharCode(10));
+    if (!naturalFormulaCache.has(key)) {
+      if (naturalFormulaCache.size >= 300) naturalFormulaCache.clear();
+      // Text-style fractions are too small to read on a tablet; set them full size.
+      const made = mathJaxImage(latex.replace(/\\frac(?![A-Za-z])/g, "\\dfrac"), fontSize, color, pixelRatio, true);
+      naturalFormulaCache.set(key, made);
+      made.then((result) => { if (!result.image) naturalFormulaCache.delete(key); });
+    }
+    return naturalFormulaCache.get(key);
+  }
+  async function mathJaxImage(latex, fontSize, color, pixelRatio = sharpRenderRatio(), natural = false) {
     if (!window.MathJax?.tex2svgPromise) return { image: null, error: Error("MathJax unavailable") };
     try {
       const node = await window.MathJax.tex2svgPromise(latex, {
@@ -20325,8 +20452,9 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
       if (!svg) throw Error("No MathJax SVG");
       const viewBox = (svg.getAttribute("viewBox") || "").trim().split(/\s+/).map(Number),
         ratio = viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0 ? viewBox[2] / viewBox[3] : Math.max(0.7, latex.length * 0.65),
-        logicalHeight = Math.max(1, Math.ceil(fontSize * 1.35)),
-        logicalWidth = Math.max(1, Math.ceil(logicalHeight * ratio)),
+        metric = natural && viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0,
+        logicalHeight = Math.max(1, Math.ceil(metric ? viewBox[3] / 1000 * fontSize : fontSize * 1.35)),
+        logicalWidth = Math.max(1, Math.ceil(metric ? viewBox[2] / 1000 * fontSize : logicalHeight * ratio)),
         rasterScale = rasterScaleFor(logicalWidth, logicalHeight, pixelRatio),
         rasterWidth = Math.max(1, Math.ceil(logicalWidth * rasterScale)),
         rasterHeight = Math.max(1, Math.ceil(logicalHeight * rasterScale));
@@ -20347,6 +20475,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
         image.logicalHeight = logicalHeight;
         image.revealRows = [logicalWidth];
         image.revealRowHeight = logicalHeight;
+        if (metric) image.ascent = Math.max(0, Math.min(logicalHeight, -viewBox[1] / 1000 * fontSize));
         return { image, error: null };
       } finally {
         URL.revokeObjectURL(url);
@@ -21272,8 +21401,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
         if (item.textCommand) {
           const layoutWidth=Math.max(item.textCommand.fontSize,Math.min((SIZE-item.x)/item.scaleX,(q.x-item.x)/item.scaleX));
           item.layoutWidth=layoutWidth;
-          item.image=textImage(item.textCommand.text,item.textCommand.fontSize,item.textCommand.color,item.layoutWidth,item.textCommand.lineHeight);
-          if(!item.heightLocked)item.layoutHeight=item.image.logicalHeight||item.image.height;
+          reflowDraftText(item);
         } else {
           const baseWidth = box.w / item.scaleX;
           item.scaleX = Math.max(40 / baseWidth, Math.min((SIZE - item.x) / baseWidth, (q.x - item.x) / baseWidth));
@@ -21307,8 +21435,7 @@ User writes “我需要根据地点, 显示空气质量”, names a place, and 
       if (p.textCommand) {
         const layoutWidth=Math.max(p.textCommand.fontSize,Math.min((SIZE-p.x)/p.scaleX,(q.x-p.x)/p.scaleX));
         p.layoutWidth=layoutWidth;
-        p.image=textImage(p.textCommand.text,p.textCommand.fontSize,p.textCommand.color,p.layoutWidth,p.textCommand.lineHeight);
-        if(!p.heightLocked)p.layoutHeight=p.image.logicalHeight||p.image.height;
+        reflowDraftText(p);
       } else {
         const baseWidth = draftBounds(p).w / p.scaleX;
         p.scaleX = Math.max(40 / baseWidth, Math.min((SIZE - p.x) / baseWidth, (q.x - p.x) / baseWidth));
@@ -28544,7 +28671,7 @@ Install a small PenEcho bootstrap skill in this Agent's supported local skill fo
       return canvasDocumentsStartDraft(true).then(()=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted&&!mcpRuntime.pageHidden)mcpConnect(reconnecting);}).catch(error=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted)canvasDocumentsReport(error,()=>mcpConnect(reconnecting));});
     }
     mcpDisconnect();mcpRuntime.authRequired=false;mcpRuntime.wanted=true;mcpRuntime.reconnecting=reconnecting;
-    mcpRuntime.browserId=mcpRuntime.browserId||window.PENECHO_CONFIG?.browserDraftId||canvasClientId();
+    mcpRuntime.browserId=mcpRuntime.browserId||window.PENECHO_CONFIG?.browserDraftId||mcpTutorDeviceId()||canvasClientId();
     const generation=mcpRuntime.generation;
     if(!reconnecting&&typeof canvasDocumentsReady==="function")void canvasDocumentsReady().then(()=>{if(generation!==mcpRuntime.generation||!mcpRuntime.wanted)return;const doc=canvasDocumentsCurrent();mcpRuntime.feedback=doc.feedback;mcpRuntime.feedbackSequence=doc.feedbackSequence;canvasDocumentsRender();}).catch(error=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted)canvasDocumentsReport(error,()=>canvasDocumentsReady());});
     const socket=window.PenEchoCloudMcpSocket
@@ -28625,6 +28752,16 @@ Install a small PenEcho bootstrap skill in this Agent's supported local skill fo
     });
     socket.addEventListener("error",()=>{if(socket===mcpRuntime.socket)mcpDisconnect(true);});
     mcpRenderSettings();
+  }
+  // Tutor-mode fork: keep one stable id per tablet (instead of a new one per page load), so a
+  // classroom tool can keep recognising a student's tablet after a refresh.
+  function mcpTutorDeviceId() {
+    if(window.PENECHO_CONFIG?.tutorMode!==true)return null;
+    try{
+      let id=localStorage.getItem("penecho.tutorDeviceId");
+      if(!/^[0-9a-f-]{36}$/.test(id||"")){id=canvasClientId();localStorage.setItem("penecho.tutorDeviceId",id);}
+      return id;
+    }catch{return null;}
   }
   function mcpEscape(text) { return String(text??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   // Record committed user input only. Never scan pixels or consume Canvas dirty state here.
@@ -30772,6 +30909,8 @@ var canvasDocumentIdentity = (() => {
       canvasAgentAssertToolExecution(execution);const restoreMutation=canvasDocumentsBeginEdit(doc,execution);try {
       if(canvasDocumentsIsActive(doc))state.textBoxes.push(record);else {const {image,...stored}=record;doc.stored.item.textBoxes.push(stored);}
       canvasDocumentsEndEdit(doc,"create_text",record.id);
+      // Fork (tutor mode): the first text an MCP client writes on a page is its question.
+      if(typeof tutorNoteQuestion==="function")tutorNoteQuestion(doc.id,record.id);
       }finally{restoreMutation();}
       if(!args.region&&session&&canvasDocumentsIsActive(doc))mcpQueueView(session,record);
       return {applied:true,objectId:record.id,revision:doc.revision,box:canvasDocumentsBounds({item:record}),sourcePlacement:mcpSourcePlacement(execution?.assistContext,record,32/(execution?.assistContext?.scale||state.scale))};
@@ -32436,7 +32575,8 @@ var canvasDocumentIdentity = (() => {
       studioNavigatorMcpEnabled=enabled;
       if(!enabled){studioMcpPendingDocumentId=null;studioMcpPendingRegion=null;studioMcpLatestDocumentId=null;studioMcpLatestRegion=null;}
       studioNavigatorMcpTab.hidden=false;studioNavigatorMcpTab.dataset.online=String(enabled);
-      if(enabled&&reveal){
+      // Fork: a student's tablet links up by itself; it must not open the sidebar or leave pen mode.
+      if(enabled&&reveal&&!(typeof tutorStudentUi==="function"&&tutorStudentUi())){
         selectCanvasToolMode("hand");
         studioNavigatorSuspendedAgent=false;
         studioNavigatorRestoreAgentAfterManager=false;
@@ -35578,9 +35718,50 @@ var canvasDocumentIdentity = (() => {
     debug("smart-suggest-silent-failure", { reason, failures:smartSuggest.failures });
   }
 
+  // Tutor mode (fork addition): the bar always leads with Check and Hint, and actions that
+  // reveal results for the learner (Answer, Solve) are not offered at all.
+  // animate/prototype always run through the PenEcho Agent, which tutor mode closes.
+  const TUTOR_HIDDEN_ACTIONS = Object.freeze(["answer", "solve", "animate", "prototype"]);
+  // Besides Check and Hint, the bar's overflow offers only these. Next step, Typeset, Organize,
+  // Note, Plot and the rest either hand over part of the solution or are not for class work.
+  const TUTOR_MORE_ACTIONS = Object.freeze(["explain", "practice"]);
+  function tutorModeOn() { return window.PENECHO_CONFIG?.tutorMode === true; }
+  if (tutorModeOn()) {
+    // The PenEcho Agent panel is closed server-side in tutor mode; hide its entry points too.
+    // The rules live in studio-shell.css (:root[data-tutor-mode]); the page's Content Security
+    // Policy blocks style elements added by script.
+    document.documentElement.setAttribute("data-tutor-mode", "");
+    // A modified build shows its own name, not the PenEcho wordmark.
+    const productName = window.PENECHO_CONFIG?.productName, brand = document.querySelector(".brand h1");
+    if (productName) { document.title = productName; if (brand) brand.textContent = productName; }
+    if (tutorStudentUi()) {
+      // Student view: studio-shell.css hides what a student does not need
+      // (:root[data-tutor-student]). "New canvas" is how a student moves to the next
+      // question, so it gets its own button instead of sitting in the More menu.
+      document.documentElement.setAttribute("data-tutor-student", "");
+      const anchor = document.querySelector("#canvasMoreControl");
+      if (anchor && document.querySelector("#newCanvasBtn")) {
+        const next = document.createElement("button"),
+          label = /^zh/i.test(document.documentElement.lang || navigator.language || "") ? "\u65b0\u5efa\u753b\u5e03" : "New canvas";
+        next.id = "tutorNewCanvasBtn";
+        next.type = "button";
+        next.dataset.shellForward = "#newCanvasBtn";
+        next.textContent = label;
+        next.title = label;
+        anchor.before(next);
+      }
+    }
+  }
+  function tutorFilter(items) { return (items || []).filter(item => !TUTOR_HIDDEN_ACTIONS.includes(item.id)); }
+  function tutorAssistView(view) {
+    const pinned = ["check_step", "hint"],
+      rest = tutorFilter([...view.items, ...view.more]).filter(item => !pinned.includes(item.id) && TUTOR_MORE_ACTIONS.includes(item.id));
+    return { ...view, items:pinned.map(id => ({ id, source:"tutor" })), more:rest, confident:false };
+  }
   // Keep the manual shortcut in a ranked first/second slot, or default third.
   // Result/Next suggestions keep their own classification-based actions.
   function assistAnswerView(view) {
+    if (typeof tutorModeOn === "function" && tutorModeOn()) return tutorAssistView(view);
     // Preserve a ranked Answer (PenEchoLLM or the calibrated instant order) in
     // first or second place; otherwise keep the shortcut in third/last place.
     const answerIndex = view.items.findIndex(item => item.id === "answer"),
@@ -35594,7 +35775,8 @@ var canvasDocumentIdentity = (() => {
   function assistView(cluster) {
     if (cluster.result) {
       // No guessed next actions while waiting; Ask and Keep remain available.
-      return SMART_SUGGEST.rankResultActions(smartSuggest.jev?.key === cluster.key ? smartSuggest.jev.answers : null, { previousAction:cluster.previousAction });
+      const resultView = SMART_SUGGEST.rankResultActions(smartSuggest.jev?.key === cluster.key ? smartSuggest.jev.answers : null, { previousAction:cluster.previousAction });
+      return typeof tutorModeOn === "function" && tutorModeOn() ? { ...resultView, items:tutorFilter(resultView.items), more:tutorFilter(resultView.more) } : resultView;
     }
     if (cluster.selection && !smartSuggest.enabled) return assistAnswerView({ items:[{ id:"typeset", source:"local" }], more:[], confident:false, source:"local" });
     const analysis = assistAnalyze(cluster),
@@ -35612,7 +35794,7 @@ var canvasDocumentIdentity = (() => {
     const selected = smartSuggest.selection && smartSuggest.selection === state.selection && state.selection.phase === "active";
     // Keep the current bar while requests pause automatic suggestion refreshes.
     return !smartSuggestActive() || state.drawing || state.selectionGesture || state.selection && !selected
-      || !selected && (!smartSuggestInputModeAllowed() || smartSuggestObjectEditing()) || state.viewMode || document.visibilityState === "hidden" || smartSuggest.shapeTool
+      || !selected && (!smartSuggestInputModeAllowed() || smartSuggestObjectEditing()) || state.viewMode || document.visibilityState === "hidden" || smartSuggest.shapeTool && !smartSuggest.shapeTool.strike
       || assistRequestsActive()
       || (!selected && typeof penDeleteOfferVisible === "function" && penDeleteOfferVisible());
   }
@@ -36072,7 +36254,7 @@ var canvasDocumentIdentity = (() => {
     if (!smartSuggestActive() || smartSuggest.bar || !valid(point) || state.viewMode
         || !["pen", "hand"].includes(state.mode) || state.spacePan || state.drawing || state.activeAI
         || state.pending || state.pendingWidget || state.selection || state.selectionGesture || state.panGesture
-        || state.touchGesture || state.touches.size || state.widgetRefineConfirmation || smartSuggest.shapeTool
+        || state.touchGesture || state.touches.size || state.widgetRefineConfirmation || smartSuggest.shapeTool && !smartSuggest.shapeTool.strike
         || document.visibilityState === "hidden" || handObjectToolbarTargetAtPoint(point)) return null;
     const contains = box => point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h;
     const cluster = smartSuggestCluster(true);
@@ -36754,11 +36936,48 @@ var canvasDocumentIdentity = (() => {
     requestRender();
     return true;
   }
+  // Fork (tutor mode): the height of the student's handwriting, in canvas units, read from the
+  // recent pen strokes (the 80th percentile of their heights, so dashes and dots do not count).
+  // 0 when there is too little ink to tell, for example right after a reload.
+  function tutorInkHeight() {
+    const heights = smartSuggest.strokes
+      .filter(stroke => !stroke.exact && stroke.box && state.history.includes(stroke.historyEntry))
+      .slice(-150).map(stroke => stroke.box.h).filter(height => height > 0).sort((a, b) => a - b);
+    return heights.length < 4 ? 0 : heights[Math.floor(heights.length * 0.8)];
+  }
+  // A second finger during a finger-drawn shape starts navigation; drop the half-drawn shape.
+  function cancelAssistShapeGesture() {
+    smartSuggest.shapeGesture?.preview?.remove();
+    smartSuggest.shapeGesture = null;
+  }
+  // ---------- Strike tool (fork, tutor mode) ----------
+  // A dock button next to the eraser. It draws a straight red line through work the student
+  // takes back. The work stays visible to the teacher, and the tutor prompts tell the model
+  // to treat struck-out writing as deleted. It reuses the line shape tool below.
+  const TUTOR_STRIKE_COLOR = "#dc2626";
+  let tutorStrikeButton = null;
+  function tutorStrikeSync() {
+    const on = Boolean(smartSuggest.shapeTool?.strike),
+      pen = document.querySelector("#penToolBtn");
+    tutorStrikeButton?.classList.toggle("active", on);
+    tutorStrikeButton?.setAttribute("aria-pressed", String(on));
+    if (tutorStrikeButton && pen && state.mode === "pen") {
+      pen.classList.toggle("active", !on);
+      pen.setAttribute("aria-pressed", String(!on));
+    }
+  }
+  function startTutorStrikeTool() {
+    if (smartSuggest.shapeTool) stopAssistShapeTool();
+    if (state.mode !== "pen") setCanvasMode("pen");
+    smartSuggest.shapeTool = { kind:"line", strike:true };
+    tutorStrikeSync();
+  }
   // ---------- Shape tools ----------
   function startAssistShapeTool(kind) {
     if (!SMART_SUGGEST?.SHAPE_TOOLS.includes(kind)) return;
     if (state.mode !== "pen") setCanvasMode("pen");
     smartSuggest.shapeTool = { kind };
+    tutorStrikeSync();
     assistToolsButton?.classList.add("active");
     assistToolsButton?.setAttribute("aria-pressed", "true");
     const bar = smartSuggest.bar;
@@ -36774,6 +36993,7 @@ var canvasDocumentIdentity = (() => {
     assistToolsButton?.setAttribute("aria-pressed", "false");
     if (smartSuggest.bar?.mode === "tool") hideAssist("tool-stopped");
     if (active) assistRefresh("tool-stopped");
+    tutorStrikeSync();
   }
   function assistShapeOutline(gesture, constrain) {
     const unit = 1 / Math.max(0.03, state.scale);
@@ -36786,7 +37006,7 @@ var canvasDocumentIdentity = (() => {
     for (const line of outline) {
       const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
       polyline.setAttribute("points", line.map(point => `${(point.x * state.scale + state.panX).toFixed(1)},${(point.y * state.scale + state.panY).toFixed(1)}`).join(" "));
-      polyline.setAttribute("stroke", state.inkColor);
+      polyline.setAttribute("stroke", gesture.strike ? TUTOR_STRIKE_COLOR : state.inkColor);
       polyline.setAttribute("stroke-width", String(Math.max(1.5, state.pen)));
       svg.append(polyline);
     }
@@ -36799,7 +37019,7 @@ var canvasDocumentIdentity = (() => {
     preview.setAttribute("aria-hidden", "true");
     smartSuggestLayer.append(preview);
     smartSuggestLayer.hidden = false;
-    smartSuggest.shapeGesture = { id:event.pointerId, kind:smartSuggest.shapeTool.kind, start:{ ...point }, end:{ ...point }, preview };
+    smartSuggest.shapeGesture = { id:event.pointerId, kind:smartSuggest.shapeTool.kind, pointerType:event.pointerType, strike:smartSuggest.shapeTool.strike === true, start:{ ...point }, end:{ ...point }, preview };
     supersedeActiveAI("user-input-started");
     clearTimeout(state.timer);
     state.timer = 0;
@@ -36822,7 +37042,7 @@ var canvasDocumentIdentity = (() => {
     gesture.end = clientPoint(event);
     const outline = assistShapeOutline(gesture, event.shiftKey);
     if (!outline) return true;
-    const size = logicalWidth(state.pen), color = state.inkColor;
+    const size = logicalWidth(state.pen), color = gesture.strike ? TUTOR_STRIKE_COLOR : state.inkColor;
     for (const line of outline) for (let index = 1; index < line.length; index++) stroke(line[index - 1], line[index], false, size, true, color);
     state.userRevision++;
     state.autoEligible = true;
@@ -36835,7 +37055,7 @@ var canvasDocumentIdentity = (() => {
         box = { x:Math.min(...xs), y:Math.min(...ys), w:Math.max(...xs) - Math.min(...xs), h:Math.max(...ys) - Math.min(...ys) };
       smartSuggestRecordStroke({ id:smartSuggest.nextStrokeId++, points:line, size, color, box, at:performance.now(), historyEntry:state.history.at(-1), exact:true });
     }
-    smartSuggestRecent(`drew ${gesture.kind}`);
+    smartSuggestRecent(gesture.strike ? "struck out work" : `drew ${gesture.kind}`);
     return true;
   }
   document.addEventListener("keydown", event => {
@@ -36861,6 +37081,39 @@ var canvasDocumentIdentity = (() => {
     renderAssist({ mode:"tools", box:cluster?.box || null, target:cluster ? { box:cluster.box, newBox:cluster.newBox, strokes:cluster.strokes } : null });
   });
   for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => { if (smartSuggest.shapeTool) stopAssistShapeTool(); });
+  if (tutorModeOn()) {
+    const anchor = document.querySelector("#eraserToolControl");
+    if (anchor) {
+      const chinese = /^zh/i.test(document.documentElement.lang || navigator.language || ""),
+        label = chinese ? "\u5212\u6389\uff1a\u5212\u6389\u7684\u5185\u5bb9\u4e0d\u7b97\u4f5c\u7b54" : "Strike out: crossed-out work is not counted";
+      tutorStrikeButton = document.createElement("button");
+      tutorStrikeButton.id = "tutorStrikeBtn";
+      tutorStrikeButton.type = "button";
+      tutorStrikeButton.className = "icon-button";
+      tutorStrikeButton.dataset.peButton = "toolbar";
+      tutorStrikeButton.dataset.peDensity = "compact";
+      tutorStrikeButton.setAttribute("aria-pressed", "false");
+      tutorStrikeButton.setAttribute("aria-label", label);
+      tutorStrikeButton.title = label;
+      // An SVG glyph built node by node: a faint letter T with a red line through it.
+      const glyph = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      glyph.setAttribute("viewBox", "0 0 24 24");
+      glyph.setAttribute("aria-hidden", "true");
+      for (const [d, attributes] of [["M7 6h10M12 6v13M9.5 19h5", { opacity:".7" }], ["M3.5 12.5h17", { stroke:TUTOR_STRIKE_COLOR, "stroke-width":"2.4" }]]) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", d);
+        for (const [name, value] of Object.entries(attributes)) path.setAttribute(name, value);
+        glyph.append(path);
+      }
+      tutorStrikeButton.append(glyph);
+      tutorStrikeButton.addEventListener("click", event => {
+        event.stopPropagation();
+        if (smartSuggest.shapeTool?.strike) stopAssistShapeTool();
+        else startTutorStrikeTool();
+      });
+      anchor.after(tutorStrikeButton);
+    }
+  }
   document.addEventListener("pointerdown", event => {
     if (smartSuggest.bar?.mode === "tools" && !smartSuggest.bar.element.contains(event.target) && !assistToolsButton?.contains(event.target)) {
       hideAssist("tools-outside");
@@ -36962,6 +37215,304 @@ var canvasDocumentIdentity = (() => {
     if (typeof cancelWidgetAssistSuggestions === "function") cancelWidgetAssistSuggestions();
     void refreshSmartSuggestAvailability({ force:true, reason:"account" });
   });
+  // ---------- Tutor windows (fork, student view) ----------
+  // A student's tablet shows the canvas (the answer area) with two floating windows on top:
+  //   Menu     - the page list, New canvas, connection status, Settings, Fullscreen.
+  //   Question - the question of the current page. It stays on screen while the student
+  //              pans or zooms the canvas to find room to write.
+  // Each window is dragged by its title bar, folded by tapping the bar, and remembers its place
+  // on this tablet. The top bar they replace is hidden by studio-shell.css.
+  const TUTOR_WINDOWS_KEY = "penecho.tutor.windows",
+    TUTOR_QUESTIONS_KEY = "penecho.tutor.questions",
+    TUTOR_RESULTS_KEY = "penecho.tutor.results",
+    // Accent choices offered in the Menu window (names of the built-in Studio palettes).
+    TUTOR_PALETTES = Object.freeze([["indigo", "#4f46e5"], ["azure", "#0284c7"], ["teal", "#0d9488"], ["forest", "#15803d"], ["amber", "#d97706"], ["rose", "#e11d48"]]),
+    tutorWindows = { menu:null, question:null, layout:{}, keys:{}, timer:0 };
+  function tutorStored(key) {
+    try { const value = JSON.parse(globalThis.localStorage?.getItem(key) || "{}"); return value && typeof value === "object" ? value : {}; } catch { return {}; }
+  }
+  function tutorStore(key, value) {
+    try { globalThis.localStorage?.setItem(key, JSON.stringify(value)); } catch { /* private mode: the windows still work, they just forget */ }
+  }
+  // The bridge writes the question as the page's text object over MCP. Remember which object
+  // it was, so an AI reply or the student's own text box is never mistaken for the question.
+  function tutorNoteQuestion(documentId, objectId) {
+    if (globalThis.PENECHO_CONFIG?.tutorMode !== true || !documentId || !objectId) return;
+    const known = tutorStored(TUTOR_QUESTIONS_KEY);
+    if (known[documentId]) return;
+    known[documentId] = objectId;
+    const ids = Object.keys(known);
+    for (const id of ids.slice(0, Math.max(0, ids.length - 80))) delete known[id];
+    tutorStore(TUTOR_QUESTIONS_KEY, known);
+  }
+  // A tutor reply that opens with a verdict is the result of Check on the current page:
+  // "ok" once the work is judged correct, "try" while it is not. Kept per page on this tablet
+  // so the progress dots keep their colour; a correct verdict also plays a short cheer.
+  function tutorNoteCheck(text) {
+    const verdict = /^\s*(?:##\s*)?([✓✗])/.exec(String(text || ""))?.[1], doc = canvasDocuments.activeId;
+    if (!verdict || !doc) return;
+    const now = Date.now(), last = tutorWindows.lastCheck;
+    if (last && last.text === text && now - last.at < 3000) return;
+    tutorWindows.lastCheck = { text, at:now };
+    const results = tutorStored(TUTOR_RESULTS_KEY), ids = Object.keys(results);
+    results[doc] = verdict === "✓" ? "ok" : "try";
+    for (const id of ids.slice(0, Math.max(0, ids.length - 120))) delete results[id];
+    tutorStore(TUTOR_RESULTS_KEY, results);
+    tutorWindows.keys.steps = "";
+    const win = tutorWindows.question?.win;
+    if (verdict !== "✓" || !win) return;
+    win.removeAttribute("data-cheer");
+    void win.offsetWidth;
+    win.setAttribute("data-cheer", "");
+    clearTimeout(tutorWindows.cheerTimer);
+    tutorWindows.cheerTimer = setTimeout(() => win.removeAttribute("data-cheer"), 2200);
+  }
+  // Lesson pages are titled "<topic> · 共 8 题 · 第 3 题" (the total is optional).
+  function tutorLessonPage(title) {
+    const number = /第\s*(\d+)\s*题/.exec(title || ""), total = /共\s*(\d+)\s*题/.exec(title || "");
+    return number ? { topic:String(title).split("·")[0].trim(), number:+number[1], total:total ? +total[1] : 0 } : null;
+  }
+  function tutorPageName(title) { return String(title || "").replace(/\s*·\s*共\s*\d+\s*题/, ""); }
+  function tutorQuestionRecord() {
+    const doc = canvasDocuments.activeId, boxes = Array.isArray(state.textBoxes) ? state.textBoxes : [],
+      noted = tutorStored(TUTOR_QUESTIONS_KEY)[doc];
+    if (noted) return boxes.find(box => box.id === noted) || null;
+    // Pages made before this was recorded: on a lesson page the question is the first text object.
+    const title = canvasDocuments.records.get(doc)?.title || "";
+    if (!/第\s*\d+\s*题/.test(title)) return null;
+    return [...boxes].sort((a, b) => (parseInt(String(a.id).slice(9), 10) || 0) - (parseInt(String(b.id).slice(9), 10) || 0))[0] || null;
+  }
+  function tutorWindowText(en, zh) { return state.language === "zh" ? zh : en; }
+  function tutorWindowElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text != null) element.textContent = text;
+    return element;
+  }
+  function tutorWindowPlace(win) {
+    const saved = tutorWindows.layout[win.dataset.window] || {}, rect = win.getBoundingClientRect(),
+      maxX = Math.max(0, globalThis.innerWidth - Math.min(rect.width, 120)), maxY = Math.max(0, globalThis.innerHeight - 44),
+      x = Math.max(0, Math.min(maxX, Number.isFinite(saved.x) ? saved.x : win.dataset.window === "menu" ? globalThis.innerWidth - rect.width - 12 : 12)),
+      y = Math.max(0, Math.min(maxY, Number.isFinite(saved.y) ? saved.y : 12));
+    win.style.left = `${x}px`;
+    win.style.top = `${y}px`;
+    if (Number.isFinite(saved.w)) win.style.width = `${Math.max(200, Math.min(globalThis.innerWidth - 16, saved.w))}px`;
+    win.toggleAttribute("data-folded", saved.folded === true);
+  }
+  function tutorWindowSave(win, change) {
+    const name = win.dataset.window;
+    tutorWindows.layout[name] = { ...tutorWindows.layout[name], ...change };
+    tutorStore(TUTOR_WINDOWS_KEY, tutorWindows.layout);
+    tutorWindowPlace(win);
+  }
+  // Drag by the title bar; a tap that does not move folds or unfolds the window.
+  function tutorWindowDrag(win, handle, resize = false) {
+    let grab = null;
+    handle.addEventListener("pointerdown", event => {
+      if (event.button > 0 || event.target instanceof Element && event.target.closest("button")) return;
+      const rect = win.getBoundingClientRect();
+      grab = { id:event.pointerId, x:event.clientX, y:event.clientY, left:rect.left, top:rect.top, width:rect.width, moved:false };
+      handle.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("pointermove", event => {
+      if (!grab || event.pointerId !== grab.id) return;
+      const dx = event.clientX - grab.x, dy = event.clientY - grab.y;
+      if (!grab.moved && Math.hypot(dx, dy) < 6) return;
+      grab.moved = true;
+      if (resize) win.style.width = `${Math.max(200, Math.min(globalThis.innerWidth - 16, grab.width + dx))}px`;
+      else { win.style.left = `${grab.left + dx}px`; win.style.top = `${grab.top + dy}px`; }
+    });
+    const end = event => {
+      if (!grab || event.pointerId !== grab.id) return;
+      const rect = win.getBoundingClientRect(), moved = grab.moved;
+      grab = null;
+      if (resize) tutorWindowSave(win, moved ? { w:rect.width } : {});
+      else tutorWindowSave(win, moved ? { x:rect.left, y:rect.top } : event.type === "pointerup" ? { folded:!win.hasAttribute("data-folded") } : {});
+    };
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function tutorWindowCreate(name) {
+    const win = tutorWindowElement("section", "tutor-window"), bar = tutorWindowElement("header", "tutor-window-bar"),
+      title = tutorWindowElement("b", "tutor-window-title"), note = tutorWindowElement("span", "tutor-window-note"),
+      fold = tutorWindowElement("i", "tutor-window-fold"), body = tutorWindowElement("div", "tutor-window-body");
+    win.id = name === "menu" ? "tutorMenuWindow" : "tutorQuestionWindow";
+    win.dataset.window = name;
+    fold.setAttribute("aria-hidden", "true");
+    bar.append(tutorWindowElement("i", "tutor-window-grip"), title, note, fold);
+    win.append(bar, body);
+    // Nothing done on a window should reach the canvas underneath.
+    for (const type of ["pointerdown", "wheel", "touchstart"]) win.addEventListener(type, event => event.stopPropagation(), { passive:true });
+    tutorWindowDrag(win, bar);
+    document.body.append(win);
+    return { win, title, note, body };
+  }
+  function tutorWindowButton(label, forward, className = "") {
+    const button = tutorWindowElement("button", className, label);
+    button.type = "button";
+    if (forward) button.dataset.shellForward = forward;
+    return button;
+  }
+  function tutorWindowsRefresh() {
+    const { menu, question } = tutorWindows, keys = tutorWindows.keys,
+      pages = [...canvasDocuments.records.values()].sort((a, b) => (a.firstSeenAt || 0) - (b.firstSeenAt || 0) || a.id.localeCompare(b.id)),
+      active = canvasDocuments.records.get(canvasDocuments.activeId),
+      pagesKey = `${state.language}|${canvasDocuments.activeId}|${pages.map(page => `${page.id}:${page.title}`).join("|")}`;
+    if (pagesKey !== keys.pages) {
+      keys.pages = pagesKey;
+      menu.title.textContent = tutorWindowText("Menu", "菜单");
+      menu.pagesLabel.textContent = tutorWindowText("Pages", "画布列表");
+      menu.next.textContent = tutorWindowText("New canvas", "新建画布");
+      menu.settings.textContent = tutorWindowText("Settings", "设置");
+      menu.fullscreen.textContent = tutorWindowText("Fullscreen", "全屏");
+      menu.keep.textContent = tutorWindowText("Keep AI writing", "保留 AI 内容");
+      menu.discard.textContent = tutorWindowText("Discard", "丢弃");
+      question.title.textContent = tutorWindowText("Question", "题目");
+      menu.pages.replaceChildren(...pages.map(page => {
+        const row = tutorWindowButton(tutorPageName(page.title) || tutorWindowText("Untitled canvas", "未命名画布"), "", "tutor-window-page");
+        if (page.id === canvasDocuments.activeId) row.setAttribute("aria-current", "page");
+        row.addEventListener("click", () => canvasDocumentsUiAction(async () => { await canvasDocumentsShow(page.id); }));
+        return row;
+      }));
+      menu.pages.querySelector("[aria-current]")?.scrollIntoView?.({ block:"nearest" });
+      menu.colorLabel.textContent = tutorWindowText("Colour", "颜色");
+      keys.steps = "";
+    }
+    // Progress through the lesson: one dot per question, coloured by how its check went.
+    const lesson = tutorLessonPage(active?.title), results = tutorStored(TUTOR_RESULTS_KEY),
+      mine = lesson ? pages.map(page => ({ page, at:tutorLessonPage(page.title) })).filter(item => item.at && item.at.topic === lesson.topic) : [],
+      count = lesson ? Math.max(lesson.total, ...mine.map(item => item.at.number)) : 0,
+      stepsKey = lesson ? `${pagesKey}|${mine.map(item => results[item.page.id] || "").join(",")}` : `none|${active?.title || ""}`;
+    if (stepsKey !== keys.steps) {
+      keys.steps = stepsKey;
+      question.note.textContent = lesson ? tutorWindowText(`${lesson.number} of ${count}`, `第 ${lesson.number} / ${count} 题`) : tutorPageName(active?.title);
+      question.steps.hidden = !lesson || count > 30;
+      question.steps.replaceChildren(...(lesson && count <= 30 ? Array.from({ length:count }, (_, index) => {
+        const item = mine.filter(entry => entry.at.number === index + 1).at(-1), dot = tutorWindowButton(String(index + 1), "", "tutor-window-step");
+        dot.dataset.state = !item ? "ahead" : results[item.page.id] || "open";
+        if (item?.page.id === canvasDocuments.activeId) dot.setAttribute("aria-current", "step");
+        if (item) dot.addEventListener("click", () => canvasDocumentsUiAction(async () => { await canvasDocumentsShow(item.page.id); }));
+        else dot.disabled = true;
+        return dot;
+      }) : []));
+    }
+    const palette = state.studioPalette || "";
+    if (palette !== keys.palette) {
+      keys.palette = palette;
+      for (const swatch of menu.colors.children) swatch.setAttribute("aria-pressed", String(swatch.dataset.palette === palette));
+    }
+    const status = document.querySelector("#status")?.textContent?.trim() || "",
+      link = document.querySelector("#mcpToolbarToggle"),
+      drafts = document.querySelector("#batchActions")?.hidden === false,
+      linkKey = `${state.language}|${link?.dataset.state || ""}|${document.querySelector("#mcpToolbarStatus")?.textContent || ""}|${status}|${drafts}`;
+    if (linkKey !== keys.link) {
+      keys.link = linkKey;
+      menu.link.dataset.state = link?.dataset.state || "off";
+      menu.link.textContent = `${tutorWindowText("Teacher link", "老师端连接")}：${document.querySelector("#mcpToolbarStatus")?.textContent?.trim() || "—"}`;
+      menu.note.textContent = status;
+      menu.status.textContent = status;
+      // The top bar's Keep / Discard for AI drafts lives here while the bar is hidden.
+      menu.batch.hidden = !drafts;
+    }
+    const record = tutorQuestionRecord(), image = record?.image,
+      questionKey = record ? `${canvasDocuments.activeId}|${record.id}|${record.text}|${image?.width || 0}x${image?.height || 0}|${state.language}` : `none|${state.language}`;
+    if (questionKey !== keys.question) {
+      keys.question = questionKey;
+      if (!record) {
+        question.body.replaceChildren(tutorWindowElement("p", "tutor-window-empty", tutorWindowText("This page has no question.", "这一页没有题目。")));
+      } else if (image && image.width > 0 && image.height > 0) {
+        // Show the page's own rendering of the question (it already has the formulas typeset),
+        // at about 20 px text regardless of how large it is on the canvas.
+        const copy = tutorWindowElement("canvas", "tutor-window-question");
+        copy.width = image.width;
+        copy.height = image.height;
+        copy.getContext("2d").drawImage(image, 0, 0);
+        copy.style.width = `${Math.round(record.w * 20 / Math.max(1, record.fontSize))}px`;
+        copy.setAttribute("role", "img");
+        copy.setAttribute("aria-label", record.text);
+        question.body.replaceChildren(copy);
+      } else {
+        question.body.replaceChildren(tutorWindowElement("p", "tutor-window-question-text", record.text));
+      }
+    }
+  }
+  // A student's tablet opens its workspace to the local MCP server by itself (the switch under
+  // Settings > MCP that used to be tapped by hand on every tablet), and opens it again if it was
+  // switched off or the page came back from the background. A dropped connection is retried by
+  // mcpConnect's own back-off; this only covers the case where nothing is trying any more.
+  function tutorAutoLink() {
+    if (typeof mcpConnect !== "function" || typeof mcpRuntime === "undefined" || !mcpRuntime) return;
+    if (mcpRuntime.wanted || mcpRuntime.socket || mcpRuntime.pageHidden || document.hidden) return;
+    const now = Date.now();
+    if (now - (tutorWindows.linkAt || 0) < 5000) return;
+    tutorWindows.linkAt = now;
+    try { mcpConnect(); } catch { /* tried again on a later tick */ }
+  }
+  function tutorWindowsInit() {
+    if (typeof tutorStudentUi !== "function" || !tutorStudentUi() || tutorWindows.menu || !document.body) return;
+    tutorWindows.layout = tutorStored(TUTOR_WINDOWS_KEY);
+    const menu = tutorWindowCreate("menu"), question = tutorWindowCreate("question"),
+      row = tutorWindowElement("div", "tutor-window-row"), grip = tutorWindowElement("i", "tutor-window-resize");
+    menu.pagesLabel = tutorWindowElement("div", "tutor-window-label");
+    menu.pages = tutorWindowElement("div", "tutor-window-pages");
+    menu.next = tutorWindowButton("", "#newCanvasBtn", "tutor-window-primary");
+    menu.link = tutorWindowElement("div", "tutor-window-link");
+    menu.settings = tutorWindowButton("", "#settingsBtn");
+    menu.fullscreen = tutorWindowButton("", "#fullscreenBtn");
+    menu.batch = tutorWindowElement("div", "tutor-window-row");
+    menu.keep = tutorWindowButton("", "#acceptBatch", "tutor-window-primary");
+    menu.discard = tutorWindowButton("", "#rejectBatch");
+    menu.batch.append(menu.discard, menu.keep);
+    menu.status = tutorWindowElement("div", "tutor-window-status");
+    menu.status.setAttribute("aria-hidden", "true");
+    row.append(menu.settings, menu.fullscreen);
+    menu.colorLabel = tutorWindowElement("div", "tutor-window-label");
+    menu.colors = tutorWindowElement("div", "tutor-window-colors");
+    for (const [name, color] of TUTOR_PALETTES) {
+      const swatch = tutorWindowButton("", "", "tutor-window-swatch");
+      swatch.dataset.palette = name;
+      swatch.setAttribute("aria-label", name);
+      swatch.style.background = color;
+      swatch.addEventListener("click", () => { if (typeof applyStudioPalette === "function") applyStudioPalette(name); });
+      menu.colors.append(swatch);
+    }
+    menu.body.append(menu.pagesLabel, menu.pages, menu.next, menu.link, row, menu.colorLabel, menu.colors, menu.status, menu.batch);
+    // AGPL section 13: people using this over the network are offered the source of this build.
+    // The archive is put in public/ when the build is packaged; without it there is no link.
+    menu.about = tutorWindowElement("a", "tutor-window-about", tutorWindowText("Based on PenEcho · AGPL-3.0 · Source code", "基于 PenEcho 修改 · AGPL-3.0 · 源代码"));
+    const sourceUrl = globalThis.PENECHO_CONFIG?.sourceUrl || "";
+    menu.about.href = sourceUrl || "/source.zip";
+    menu.about.hidden = !sourceUrl;
+    if (sourceUrl) { menu.about.target = "_blank"; menu.about.rel = "noopener"; }
+    menu.body.append(menu.about);
+    if (typeof fetch === "function") fetch("/source.zip", { method:"HEAD" }).then(response => {
+        if (!response.ok) return;
+        menu.about.href = "/source.zip";
+        menu.about.removeAttribute("target");
+        menu.about.hidden = false;
+    }).catch(() => {});
+    question.steps = tutorWindowElement("div", "tutor-window-steps");
+    question.cheer = tutorWindowElement("i", "tutor-window-cheer");
+    question.cheer.setAttribute("aria-hidden", "true");
+    question.body.before(question.steps);
+    question.win.append(question.cheer);
+    grip.setAttribute("aria-hidden", "true");
+    question.win.append(grip);
+    tutorWindowDrag(question.win, grip, true);
+    tutorWindows.menu = menu;
+    tutorWindows.question = question;
+    const refresh = () => {
+      try { tutorAutoLink(); tutorWindowsRefresh(); } catch (error) { debug("tutor-windows", { message:String(error?.message || error) }); }
+    };
+    refresh();
+    tutorWindowPlace(menu.win);
+    tutorWindowPlace(question.win);
+    globalThis.addEventListener("resize", () => { tutorWindowPlace(menu.win); tutorWindowPlace(question.win); });
+    tutorWindows.timer = setInterval(refresh, 500);
+  }
+  tutorWindowsInit();
   // PenEcho Agent: composer-triggered suggestions, ranked by PenEchoLLM.
   //
   // The panel ranks one combined action space: the Canvas Suggest actions,
@@ -42023,7 +42574,9 @@ var canvasDocumentIdentity = (() => {
   // Keep pen ownership through hover and short gaps between strokes. A rejected
   // contact cannot become navigation until it lifts and starts a new gesture.
   function canvasPencilWritingActive() {
-    return state.drawing?.pointerType === "pen" || canvasAgent.inkStroke?.pointerType === "pen";
+    // Fork: a pen-drawn shape or strike line rejects the resting palm like normal writing does.
+    return state.drawing?.pointerType === "pen" || canvasAgent.inkStroke?.pointerType === "pen"
+      || typeof smartSuggest !== "undefined" && smartSuggest.shapeGesture?.pointerType === "pen";
   }
   function canvasExplicitTouchNavigation() {
     return state.mode === "hand" || state.viewMode || state.spacePan;
@@ -42442,6 +42995,7 @@ var canvasDocumentIdentity = (() => {
         if (state.animationGesture) finishAnimationGesture({ pointerId: state.animationGesture.id });
         if (state.selectedAnimationId) acceptAnimationEdit();
         finishDrawing("pen");
+        if (typeof cancelAssistShapeGesture === "function") cancelAssistShapeGesture();
         beginTouchGesture();
         return;
       }
@@ -42621,8 +43175,19 @@ var canvasDocumentIdentity = (() => {
       }
     }
   }
+  // Fork fix: the shape tools (and the strike tool built on them) used to leave end() without
+  // releasing the pointer. A finger-drawn line stayed in state.touches, so the next touch
+  // counted as a second finger and zoomed the canvas.
+  function releaseShapePointer(event) {
+    state.pointers.delete(event.pointerId);
+    canvasAgentNavigationPointerDidEnd(event.pointerId);
+    if (event.pointerType === "touch") state.touches.delete(event.pointerId);
+    state.touchGesture = null;
+    state.panGesture = null;
+    setNavigating(false);
+  }
   function end(e) {
-    if (typeof assistShapePointerUp === "function" && assistShapePointerUp(e)) return;
+    if (typeof assistShapePointerUp === "function" && assistShapePointerUp(e)) { releaseShapePointer(e); return; }
     finishHandCanvasTap(e);
     const activation = state.widgetActivationTap;
     if (activation?.id === e.pointerId) {

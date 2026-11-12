@@ -954,6 +954,8 @@
       canvasAgentAssertToolExecution(execution);const restoreMutation=canvasDocumentsBeginEdit(doc,execution);try {
       if(canvasDocumentsIsActive(doc))state.textBoxes.push(record);else {const {image,...stored}=record;doc.stored.item.textBoxes.push(stored);}
       canvasDocumentsEndEdit(doc,"create_text",record.id);
+      // Fork (tutor mode): the first text an MCP client writes on a page is its question.
+      if(typeof tutorNoteQuestion==="function")tutorNoteQuestion(doc.id,record.id);
       }finally{restoreMutation();}
       if(!args.region&&session&&canvasDocumentsIsActive(doc))mcpQueueView(session,record);
       return {applied:true,objectId:record.id,revision:doc.revision,box:canvasDocumentsBounds({item:record}),sourcePlacement:mcpSourcePlacement(execution?.assistContext,record,32/(execution?.assistContext?.scale||state.scale))};

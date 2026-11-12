@@ -32,6 +32,7 @@ const SOURCES = [
   "src/client/app/desktop-menu.js",
   "src/client/app/assist-agent.js",
   "src/client/app/smart-suggestions.js",
+  "src/client/app/tutor-windows.js",
   "src/client/app/agent-suggest.js",
   "src/client/app/widget-assist.js",
   "src/client/app/pen-intelligence.js",

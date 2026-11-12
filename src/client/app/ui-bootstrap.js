@@ -162,7 +162,9 @@
   // Keep pen ownership through hover and short gaps between strokes. A rejected
   // contact cannot become navigation until it lifts and starts a new gesture.
   function canvasPencilWritingActive() {
-    return state.drawing?.pointerType === "pen" || canvasAgent.inkStroke?.pointerType === "pen";
+    // Fork: a pen-drawn shape or strike line rejects the resting palm like normal writing does.
+    return state.drawing?.pointerType === "pen" || canvasAgent.inkStroke?.pointerType === "pen"
+      || typeof smartSuggest !== "undefined" && smartSuggest.shapeGesture?.pointerType === "pen";
   }
   function canvasExplicitTouchNavigation() {
     return state.mode === "hand" || state.viewMode || state.spacePan;
@@ -581,6 +583,7 @@
         if (state.animationGesture) finishAnimationGesture({ pointerId: state.animationGesture.id });
         if (state.selectedAnimationId) acceptAnimationEdit();
         finishDrawing("pen");
+        if (typeof cancelAssistShapeGesture === "function") cancelAssistShapeGesture();
         beginTouchGesture();
         return;
       }
@@ -760,8 +763,19 @@
       }
     }
   }
+  // Fork fix: the shape tools (and the strike tool built on them) used to leave end() without
+  // releasing the pointer. A finger-drawn line stayed in state.touches, so the next touch
+  // counted as a second finger and zoomed the canvas.
+  function releaseShapePointer(event) {
+    state.pointers.delete(event.pointerId);
+    canvasAgentNavigationPointerDidEnd(event.pointerId);
+    if (event.pointerType === "touch") state.touches.delete(event.pointerId);
+    state.touchGesture = null;
+    state.panGesture = null;
+    setNavigating(false);
+  }
   function end(e) {
-    if (typeof assistShapePointerUp === "function" && assistShapePointerUp(e)) return;
+    if (typeof assistShapePointerUp === "function" && assistShapePointerUp(e)) { releaseShapePointer(e); return; }
     finishHandCanvasTap(e);
     const activation = state.widgetActivationTap;
     if (activation?.id === e.pointerId) {

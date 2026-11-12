@@ -113,11 +113,17 @@ function canvasCatalog(value) {
   return documents;
 }
 
+// Tutor-mode fork: in tutor mode the canvas listing also carries the tablet's LAN address,
+// so a classroom tool can tell the students' tablets apart.
+function tutorAddress(connection) {
+  return /^(1|true|on|yes)$/i.test(String(process.env.PENECHO_TUTOR_MODE || "")) && connection.ip ? { ip:connection.ip } : {};
+}
+
 function publicCanvasDocuments(connection, instanceId) {
   // 1.3.1 advertises a browser, without the newer document catalog. Missing
   // capability is different from an explicit, authoritative empty catalog.
-  if(connection.documents===null)return [{canvasId:connection.canvasId,instanceId,title:connection.title,connectedAt:connection.connectedAt}];
-  return connection.documents.map(document => ({canvasId:connection.canvasId,instanceId,documentId:document.documentId,title:document.title,active:document.active,connectedAt:connection.connectedAt}));
+  if(connection.documents===null)return [{canvasId:connection.canvasId,instanceId,title:connection.title,connectedAt:connection.connectedAt,...tutorAddress(connection)}];
+  return connection.documents.map(document => ({canvasId:connection.canvasId,instanceId,documentId:document.documentId,title:document.title,active:document.active,connectedAt:connection.connectedAt,...tutorAddress(connection)}));
 }
 
 function createMcpService(options) {
@@ -364,7 +370,7 @@ function createMcpService(options) {
 
   wss.on("connection", (ws, req) => {
     if (connections.size >= MAX_CANVASES) return ws.close(1013, "Too many canvases");
-    const connection = { ws, localHost:Boolean(req && browserAddressAllowed(req.socket.remoteAddress)), canCopyLanSetup:Boolean(req && browserCanCopyLanSetup(req.socket.remoteAddress)), canvasId:null, title:null, documents:null, connectedAt:Date.now(), lastPong:Date.now(), closed:false, pending:new Map(), openRequests:new Map(), helloTimer:null, nextSlot:0 };
+    const connection = { ws, localHost:Boolean(req && browserAddressAllowed(req.socket.remoteAddress)), canCopyLanSetup:Boolean(req && browserCanCopyLanSetup(req.socket.remoteAddress)), canvasId:null, ip:String(req?.socket?.remoteAddress||"").replace(/^::ffff:/,""), title:null, documents:null, connectedAt:Date.now(), lastPong:Date.now(), closed:false, pending:new Map(), openRequests:new Map(), helloTimer:null, nextSlot:0 };
     connections.add(connection);
     connection.helloTimer = setTimeout(() => ws.close(1008, "Canvas hello required"), HELLO_TIMEOUT_MS);
     connection.helloTimer.unref?.();

@@ -929,7 +929,7 @@ Install a small PenEcho bootstrap skill in this Agent's supported local skill fo
       return canvasDocumentsStartDraft(true).then(()=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted&&!mcpRuntime.pageHidden)mcpConnect(reconnecting);}).catch(error=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted)canvasDocumentsReport(error,()=>mcpConnect(reconnecting));});
     }
     mcpDisconnect();mcpRuntime.authRequired=false;mcpRuntime.wanted=true;mcpRuntime.reconnecting=reconnecting;
-    mcpRuntime.browserId=mcpRuntime.browserId||window.PENECHO_CONFIG?.browserDraftId||canvasClientId();
+    mcpRuntime.browserId=mcpRuntime.browserId||window.PENECHO_CONFIG?.browserDraftId||mcpTutorDeviceId()||canvasClientId();
     const generation=mcpRuntime.generation;
     if(!reconnecting&&typeof canvasDocumentsReady==="function")void canvasDocumentsReady().then(()=>{if(generation!==mcpRuntime.generation||!mcpRuntime.wanted)return;const doc=canvasDocumentsCurrent();mcpRuntime.feedback=doc.feedback;mcpRuntime.feedbackSequence=doc.feedbackSequence;canvasDocumentsRender();}).catch(error=>{if(generation===mcpRuntime.generation&&mcpRuntime.wanted)canvasDocumentsReport(error,()=>canvasDocumentsReady());});
     const socket=window.PenEchoCloudMcpSocket
@@ -1010,6 +1010,16 @@ Install a small PenEcho bootstrap skill in this Agent's supported local skill fo
     });
     socket.addEventListener("error",()=>{if(socket===mcpRuntime.socket)mcpDisconnect(true);});
     mcpRenderSettings();
+  }
+  // Tutor-mode fork: keep one stable id per tablet (instead of a new one per page load), so a
+  // classroom tool can keep recognising a student's tablet after a refresh.
+  function mcpTutorDeviceId() {
+    if(window.PENECHO_CONFIG?.tutorMode!==true)return null;
+    try{
+      let id=localStorage.getItem("penecho.tutorDeviceId");
+      if(!/^[0-9a-f-]{36}$/.test(id||"")){id=canvasClientId();localStorage.setItem("penecho.tutorDeviceId",id);}
+      return id;
+    }catch{return null;}
   }
   function mcpEscape(text) { return String(text??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
   // Record committed user input only. Never scan pixels or consume Canvas dirty state here.

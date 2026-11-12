@@ -9,6 +9,15 @@ not granted for general use under the software license. See TRADEMARKS.md.
 
 Alternative commercial licenses may be available. See COMMERCIAL-LICENSE.md.
 
+Modified version notice
+-----------------------
+
+This copy has been modified (2026-11-11): it adds a "tutor mode" (PENECHO_TUTOR_MODE=1)
+that always offers Check and Hint and hides answer-revealing actions in the
+suggestion bar. With tutor mode on it presents itself as "课堂画布" (Classroom Canvas),
+or the name in PENECHO_PRODUCT_NAME. It is not an official PenEcho release. See FORK.md for the full
+list of changes. Modifications are licensed under AGPL-3.0-only.
+
 Third-party software
 --------------------
 

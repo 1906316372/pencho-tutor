@@ -1,3 +1,10 @@
+> **课堂画布 (Classroom Canvas): a tutor-mode fork of PenEcho.**
+> This is a modified version of [PenEcho](https://github.com/penecho/penecho) for small-group tutoring: students write on tablets, the AI checks and hints but does not hand out the answer. It is **not an official PenEcho release** and is not sponsored or endorsed by the PenEcho project. Licence: AGPL-3.0-only, as upstream.
+>
+> **What is different, and how to build and start it: [FORK.md](FORK.md).** Everything below this box is upstream's README, kept unchanged.
+>
+> 这是 PenEcho 的修改版，面向一对多补习：学生在平板上手写，AI 只做「检查」和「提示」，不直接给答案。它不是 PenEcho 官方版本。改了什么、怎么启动，见 [FORK.md](FORK.md)。
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="public/penecho-readme-header-dark.webp">

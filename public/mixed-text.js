@@ -252,5 +252,51 @@
     return { source: value, normalized, lines: normalized.split("\n").map(parseLine) };
   }
 
-  return { parse, tokenizeInline, bareMathAt };
+  // Line-breaking units (fork addition). Upstream wraps only at spaces, so a run of Chinese
+  // text jumps to the next line as one block and punctuation can start a line. Each unit
+  // returned here is unbreakable: a space run, a Latin/number run, or one CJK character with
+  // the closing punctuation that follows it (and the opening punctuation that precedes it).
+  const CJK_CHAR = /[⺀-鿿豈-﫿︰-﹏＀-￯]/,
+    NO_BREAK_BEFORE = "，。、；：？！）」』》〉】〕”’％…—～·,.;:?!)]}%",
+    NO_BREAK_AFTER = "（「『《〈【〔“‘([{";
+
+  function startsWithClosingPunctuation(text) {
+    const first = Array.from(String(text || ""))[0];
+    return Boolean(first) && NO_BREAK_BEFORE.includes(first);
+  }
+
+  function breakUnits(text) {
+    const units = [];
+    let kind = "";
+    for (const char of Array.from(String(text ?? ""))) {
+      const space = /\s/.test(char),
+        cjk = !space && CJK_CHAR.test(char),
+        previous = units.at(-1) || "",
+        lastChar = Array.from(previous).at(-1) || "",
+        open = kind !== "space" && Boolean(lastChar) && NO_BREAK_AFTER.includes(lastChar),
+        closing = NO_BREAK_BEFORE.includes(char);
+      if (space) {
+        if (kind === "space") units[units.length - 1] += char;
+        else units.push(char);
+        kind = "space";
+      } else if (cjk) {
+        if (previous && kind !== "space" && (closing || open)) units[units.length - 1] += char;
+        else units.push(char);
+        kind = "cjk";
+      } else {
+        if (previous && (kind === "other" || kind === "cjk" && closing || open)) units[units.length - 1] += char;
+        else units.push(char);
+        kind = kind === "cjk" && closing ? "cjk" : "other";
+      }
+    }
+    // Keep a number with its measure word: "12 本" never splits across lines.
+    for (let index = 0; index + 2 < units.length; index++) {
+      if (/^[\d.]+$/.test(units[index]) && units[index + 1] === " " && CJK_CHAR.test(Array.from(units[index + 2])[0]) && !startsWithClosingPunctuation(units[index + 2])) {
+        units.splice(index, 3, units[index] + units[index + 1] + units[index + 2]);
+      }
+    }
+    return units;
+  }
+
+  return { parse, tokenizeInline, bareMathAt, breakUnits, startsWithClosingPunctuation };
 });

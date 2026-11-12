@@ -1312,9 +1312,50 @@
     debug("smart-suggest-silent-failure", { reason, failures:smartSuggest.failures });
   }
 
+  // Tutor mode (fork addition): the bar always leads with Check and Hint, and actions that
+  // reveal results for the learner (Answer, Solve) are not offered at all.
+  // animate/prototype always run through the PenEcho Agent, which tutor mode closes.
+  const TUTOR_HIDDEN_ACTIONS = Object.freeze(["answer", "solve", "animate", "prototype"]);
+  // Besides Check and Hint, the bar's overflow offers only these. Next step, Typeset, Organize,
+  // Note, Plot and the rest either hand over part of the solution or are not for class work.
+  const TUTOR_MORE_ACTIONS = Object.freeze(["explain", "practice"]);
+  function tutorModeOn() { return window.PENECHO_CONFIG?.tutorMode === true; }
+  if (tutorModeOn()) {
+    // The PenEcho Agent panel is closed server-side in tutor mode; hide its entry points too.
+    // The rules live in studio-shell.css (:root[data-tutor-mode]); the page's Content Security
+    // Policy blocks style elements added by script.
+    document.documentElement.setAttribute("data-tutor-mode", "");
+    // A modified build shows its own name, not the PenEcho wordmark.
+    const productName = window.PENECHO_CONFIG?.productName, brand = document.querySelector(".brand h1");
+    if (productName) { document.title = productName; if (brand) brand.textContent = productName; }
+    if (tutorStudentUi()) {
+      // Student view: studio-shell.css hides what a student does not need
+      // (:root[data-tutor-student]). "New canvas" is how a student moves to the next
+      // question, so it gets its own button instead of sitting in the More menu.
+      document.documentElement.setAttribute("data-tutor-student", "");
+      const anchor = document.querySelector("#canvasMoreControl");
+      if (anchor && document.querySelector("#newCanvasBtn")) {
+        const next = document.createElement("button"),
+          label = /^zh/i.test(document.documentElement.lang || navigator.language || "") ? "\u65b0\u5efa\u753b\u5e03" : "New canvas";
+        next.id = "tutorNewCanvasBtn";
+        next.type = "button";
+        next.dataset.shellForward = "#newCanvasBtn";
+        next.textContent = label;
+        next.title = label;
+        anchor.before(next);
+      }
+    }
+  }
+  function tutorFilter(items) { return (items || []).filter(item => !TUTOR_HIDDEN_ACTIONS.includes(item.id)); }
+  function tutorAssistView(view) {
+    const pinned = ["check_step", "hint"],
+      rest = tutorFilter([...view.items, ...view.more]).filter(item => !pinned.includes(item.id) && TUTOR_MORE_ACTIONS.includes(item.id));
+    return { ...view, items:pinned.map(id => ({ id, source:"tutor" })), more:rest, confident:false };
+  }
   // Keep the manual shortcut in a ranked first/second slot, or default third.
   // Result/Next suggestions keep their own classification-based actions.
   function assistAnswerView(view) {
+    if (typeof tutorModeOn === "function" && tutorModeOn()) return tutorAssistView(view);
     // Preserve a ranked Answer (PenEchoLLM or the calibrated instant order) in
     // first or second place; otherwise keep the shortcut in third/last place.
     const answerIndex = view.items.findIndex(item => item.id === "answer"),
@@ -1328,7 +1369,8 @@
   function assistView(cluster) {
     if (cluster.result) {
       // No guessed next actions while waiting; Ask and Keep remain available.
-      return SMART_SUGGEST.rankResultActions(smartSuggest.jev?.key === cluster.key ? smartSuggest.jev.answers : null, { previousAction:cluster.previousAction });
+      const resultView = SMART_SUGGEST.rankResultActions(smartSuggest.jev?.key === cluster.key ? smartSuggest.jev.answers : null, { previousAction:cluster.previousAction });
+      return typeof tutorModeOn === "function" && tutorModeOn() ? { ...resultView, items:tutorFilter(resultView.items), more:tutorFilter(resultView.more) } : resultView;
     }
     if (cluster.selection && !smartSuggest.enabled) return assistAnswerView({ items:[{ id:"typeset", source:"local" }], more:[], confident:false, source:"local" });
     const analysis = assistAnalyze(cluster),
@@ -1346,7 +1388,7 @@
     const selected = smartSuggest.selection && smartSuggest.selection === state.selection && state.selection.phase === "active";
     // Keep the current bar while requests pause automatic suggestion refreshes.
     return !smartSuggestActive() || state.drawing || state.selectionGesture || state.selection && !selected
-      || !selected && (!smartSuggestInputModeAllowed() || smartSuggestObjectEditing()) || state.viewMode || document.visibilityState === "hidden" || smartSuggest.shapeTool
+      || !selected && (!smartSuggestInputModeAllowed() || smartSuggestObjectEditing()) || state.viewMode || document.visibilityState === "hidden" || smartSuggest.shapeTool && !smartSuggest.shapeTool.strike
       || assistRequestsActive()
       || (!selected && typeof penDeleteOfferVisible === "function" && penDeleteOfferVisible());
   }
@@ -1806,7 +1848,7 @@
     if (!smartSuggestActive() || smartSuggest.bar || !valid(point) || state.viewMode
         || !["pen", "hand"].includes(state.mode) || state.spacePan || state.drawing || state.activeAI
         || state.pending || state.pendingWidget || state.selection || state.selectionGesture || state.panGesture
-        || state.touchGesture || state.touches.size || state.widgetRefineConfirmation || smartSuggest.shapeTool
+        || state.touchGesture || state.touches.size || state.widgetRefineConfirmation || smartSuggest.shapeTool && !smartSuggest.shapeTool.strike
         || document.visibilityState === "hidden" || handObjectToolbarTargetAtPoint(point)) return null;
     const contains = box => point.x >= box.x && point.x <= box.x + box.w && point.y >= box.y && point.y <= box.y + box.h;
     const cluster = smartSuggestCluster(true);
@@ -2488,11 +2530,48 @@
     requestRender();
     return true;
   }
+  // Fork (tutor mode): the height of the student's handwriting, in canvas units, read from the
+  // recent pen strokes (the 80th percentile of their heights, so dashes and dots do not count).
+  // 0 when there is too little ink to tell, for example right after a reload.
+  function tutorInkHeight() {
+    const heights = smartSuggest.strokes
+      .filter(stroke => !stroke.exact && stroke.box && state.history.includes(stroke.historyEntry))
+      .slice(-150).map(stroke => stroke.box.h).filter(height => height > 0).sort((a, b) => a - b);
+    return heights.length < 4 ? 0 : heights[Math.floor(heights.length * 0.8)];
+  }
+  // A second finger during a finger-drawn shape starts navigation; drop the half-drawn shape.
+  function cancelAssistShapeGesture() {
+    smartSuggest.shapeGesture?.preview?.remove();
+    smartSuggest.shapeGesture = null;
+  }
+  // ---------- Strike tool (fork, tutor mode) ----------
+  // A dock button next to the eraser. It draws a straight red line through work the student
+  // takes back. The work stays visible to the teacher, and the tutor prompts tell the model
+  // to treat struck-out writing as deleted. It reuses the line shape tool below.
+  const TUTOR_STRIKE_COLOR = "#dc2626";
+  let tutorStrikeButton = null;
+  function tutorStrikeSync() {
+    const on = Boolean(smartSuggest.shapeTool?.strike),
+      pen = document.querySelector("#penToolBtn");
+    tutorStrikeButton?.classList.toggle("active", on);
+    tutorStrikeButton?.setAttribute("aria-pressed", String(on));
+    if (tutorStrikeButton && pen && state.mode === "pen") {
+      pen.classList.toggle("active", !on);
+      pen.setAttribute("aria-pressed", String(!on));
+    }
+  }
+  function startTutorStrikeTool() {
+    if (smartSuggest.shapeTool) stopAssistShapeTool();
+    if (state.mode !== "pen") setCanvasMode("pen");
+    smartSuggest.shapeTool = { kind:"line", strike:true };
+    tutorStrikeSync();
+  }
   // ---------- Shape tools ----------
   function startAssistShapeTool(kind) {
     if (!SMART_SUGGEST?.SHAPE_TOOLS.includes(kind)) return;
     if (state.mode !== "pen") setCanvasMode("pen");
     smartSuggest.shapeTool = { kind };
+    tutorStrikeSync();
     assistToolsButton?.classList.add("active");
     assistToolsButton?.setAttribute("aria-pressed", "true");
     const bar = smartSuggest.bar;
@@ -2508,6 +2587,7 @@
     assistToolsButton?.setAttribute("aria-pressed", "false");
     if (smartSuggest.bar?.mode === "tool") hideAssist("tool-stopped");
     if (active) assistRefresh("tool-stopped");
+    tutorStrikeSync();
   }
   function assistShapeOutline(gesture, constrain) {
     const unit = 1 / Math.max(0.03, state.scale);
@@ -2520,7 +2600,7 @@
     for (const line of outline) {
       const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
       polyline.setAttribute("points", line.map(point => `${(point.x * state.scale + state.panX).toFixed(1)},${(point.y * state.scale + state.panY).toFixed(1)}`).join(" "));
-      polyline.setAttribute("stroke", state.inkColor);
+      polyline.setAttribute("stroke", gesture.strike ? TUTOR_STRIKE_COLOR : state.inkColor);
       polyline.setAttribute("stroke-width", String(Math.max(1.5, state.pen)));
       svg.append(polyline);
     }
@@ -2533,7 +2613,7 @@
     preview.setAttribute("aria-hidden", "true");
     smartSuggestLayer.append(preview);
     smartSuggestLayer.hidden = false;
-    smartSuggest.shapeGesture = { id:event.pointerId, kind:smartSuggest.shapeTool.kind, start:{ ...point }, end:{ ...point }, preview };
+    smartSuggest.shapeGesture = { id:event.pointerId, kind:smartSuggest.shapeTool.kind, pointerType:event.pointerType, strike:smartSuggest.shapeTool.strike === true, start:{ ...point }, end:{ ...point }, preview };
     supersedeActiveAI("user-input-started");
     clearTimeout(state.timer);
     state.timer = 0;
@@ -2556,7 +2636,7 @@
     gesture.end = clientPoint(event);
     const outline = assistShapeOutline(gesture, event.shiftKey);
     if (!outline) return true;
-    const size = logicalWidth(state.pen), color = state.inkColor;
+    const size = logicalWidth(state.pen), color = gesture.strike ? TUTOR_STRIKE_COLOR : state.inkColor;
     for (const line of outline) for (let index = 1; index < line.length; index++) stroke(line[index - 1], line[index], false, size, true, color);
     state.userRevision++;
     state.autoEligible = true;
@@ -2569,7 +2649,7 @@
         box = { x:Math.min(...xs), y:Math.min(...ys), w:Math.max(...xs) - Math.min(...xs), h:Math.max(...ys) - Math.min(...ys) };
       smartSuggestRecordStroke({ id:smartSuggest.nextStrokeId++, points:line, size, color, box, at:performance.now(), historyEntry:state.history.at(-1), exact:true });
     }
-    smartSuggestRecent(`drew ${gesture.kind}`);
+    smartSuggestRecent(gesture.strike ? "struck out work" : `drew ${gesture.kind}`);
     return true;
   }
   document.addEventListener("keydown", event => {
@@ -2595,6 +2675,39 @@
     renderAssist({ mode:"tools", box:cluster?.box || null, target:cluster ? { box:cluster.box, newBox:cluster.newBox, strokes:cluster.strokes } : null });
   });
   for (const button of document.querySelectorAll("[data-mode]")) button.addEventListener("click", () => { if (smartSuggest.shapeTool) stopAssistShapeTool(); });
+  if (tutorModeOn()) {
+    const anchor = document.querySelector("#eraserToolControl");
+    if (anchor) {
+      const chinese = /^zh/i.test(document.documentElement.lang || navigator.language || ""),
+        label = chinese ? "\u5212\u6389\uff1a\u5212\u6389\u7684\u5185\u5bb9\u4e0d\u7b97\u4f5c\u7b54" : "Strike out: crossed-out work is not counted";
+      tutorStrikeButton = document.createElement("button");
+      tutorStrikeButton.id = "tutorStrikeBtn";
+      tutorStrikeButton.type = "button";
+      tutorStrikeButton.className = "icon-button";
+      tutorStrikeButton.dataset.peButton = "toolbar";
+      tutorStrikeButton.dataset.peDensity = "compact";
+      tutorStrikeButton.setAttribute("aria-pressed", "false");
+      tutorStrikeButton.setAttribute("aria-label", label);
+      tutorStrikeButton.title = label;
+      // An SVG glyph built node by node: a faint letter T with a red line through it.
+      const glyph = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      glyph.setAttribute("viewBox", "0 0 24 24");
+      glyph.setAttribute("aria-hidden", "true");
+      for (const [d, attributes] of [["M7 6h10M12 6v13M9.5 19h5", { opacity:".7" }], ["M3.5 12.5h17", { stroke:TUTOR_STRIKE_COLOR, "stroke-width":"2.4" }]]) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("d", d);
+        for (const [name, value] of Object.entries(attributes)) path.setAttribute(name, value);
+        glyph.append(path);
+      }
+      tutorStrikeButton.append(glyph);
+      tutorStrikeButton.addEventListener("click", event => {
+        event.stopPropagation();
+        if (smartSuggest.shapeTool?.strike) stopAssistShapeTool();
+        else startTutorStrikeTool();
+      });
+      anchor.after(tutorStrikeButton);
+    }
+  }
   document.addEventListener("pointerdown", event => {
     if (smartSuggest.bar?.mode === "tools" && !smartSuggest.bar.element.contains(event.target) && !assistToolsButton?.contains(event.target)) {
       hideAssist("tools-outside");

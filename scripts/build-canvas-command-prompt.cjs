@@ -31,6 +31,8 @@ const SKETCH_PUPPET = require("../shared/sketch-puppet.js");
 const ILLUSTRATION_STYLE = require("../shared/illustration-style.js");
 const FINISH_DRAWING = require("../shared/finish-drawing.js");
 const { hostCompiledWidget, widgetPatchFiles, widgetPatchContract, resolveWidgetEditPatchCommands } = require("./widget-patch.js");
+${["TUTOR_MODE", "TUTOR_EXEMPT_SUGGESTIONS", "TUTOR_LAYOUT"].map(constant).join("\n")}
+${section("const TUTOR_POLICY = ", "const CLOUD_STATE_DIRECTORY = ")}
 ${["MODEL_FINAL_JSON_TARGET_TOKENS", "MODEL_REASONING_BUDGET_FRACTION", "CANVAS_SIZE", "MIN_WIDGET_WIDTH", "MIN_WIDGET_HEIGHT", "WIDGET_RENDERING_POLICY", "WIDGET_PATCH_FORMAT_POLICY", "MAX_WIDGET_HTML_LENGTH", "MAX_WIDGET_COPY_TEXT_LENGTH", "MAX_DIAGRAM_SOURCE_BYTES", "DIAGRAM_SOURCE_DOCUMENT_OVERHEAD", "DEFAULT_WIDGET_WIDTH", "DEFAULT_WIDGET_HEIGHT", "MODEL_MAX_WIDGET_WIDTH", "MODEL_MAX_WIDGET_HEIGHT", "MAX_WIDGET_WIDTH", "MAX_WIDGET_HEIGHT", "MAX_WIDGET_AREA"].map(constant).join("\n")}
 ${section("const DIAGRAM_SOURCE_FORMAT_ALIASES = new Map([", "const WIDGET_RENDERING_POLICY = ")}
 ${section("const CREATE_VISUAL_POLICY = [", "const SUGGESTION_FOCUS = Object.freeze({")}
