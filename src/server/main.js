@@ -85,8 +85,8 @@ const TUTOR_SOURCE_URL = TUTOR_MODE && /^https?:\/\/\S+$/.test(process.env.PENEC
 const TUTOR_BLOCKED_SUGGESTIONS = new Set(["answer", "solve"]);
 // Suggestions with a well-defined, non-revealing (or explicitly allowed) behaviour keep their
 // normal prompt; every other request (auto AI, magic ball, lasso, typed questions, explain,
-// continue) receives TUTOR_POLICY in modelInput.
-const TUTOR_EXEMPT_SUGGESTIONS = new Set(["check_step", "hint", "next_step", "typeset", "practice", "note", "organize", "plot"]);
+// continue, and since 2026-11-15 Hint, which gave away the next line) receives TUTOR_POLICY in modelInput.
+const TUTOR_EXEMPT_SUGGESTIONS = new Set(["check_step", "next_step", "typeset", "practice", "note", "organize", "plot"]);
 // Tutor mode also typesets a reply as one readable block (see tutor-layout.js).
 const TUTOR_LAYOUT = require("./tutor-layout.js");
 // Staged Check (see TUTOR_LAYOUT.checkPrompt): how many guided checks a student gets on one
@@ -2009,6 +2009,7 @@ function canonicalPayload(p) {
     persona:THEME_PERSONAS[p.uiTheme],
     ...(typeof p.suggestion === "string" ? { suggestion:p.suggestion } : {}),
     ...(TUTOR_MODE && typeof p.tutorPage === "string" && /^[\w.:-]{1,96}$/.test(p.tutorPage) ? { tutorPage:p.tutorPage } : {}),
+    ...(TUTOR_MODE && typeof p.tutorQuestion === "string" && p.tutorQuestion.trim() ? { tutorQuestion:p.tutorQuestion.trim().slice(0, 3000) } : {}),
     ...(p.sourceInk ? { sourceInk:FINISH_DRAWING.canonicalInk(p.sourceInk, p.changedBox) } : {}),
     ...(p.sketchInk ? { sketchInk:SKETCH_PUPPET.canonicalInk(p.sketchInk, p.changedBox) } : {}),
     ...(p.suggestion === "vivid" ? { illustrationStyle:ILLUSTRATION_STYLE.normalize(p.illustrationStyle), illustrationBackground:ILLUSTRATION_STYLE.normalizeBackground(p.illustrationBackground) } : {}),
@@ -4417,6 +4418,11 @@ ${WIDGET_PATCH_FORMAT_POLICY}`,
       progress.send("received");
       if (TUTOR_MODE && !payload.widgetEdit) {
         modelInput.tutorStrikePolicy = TUTOR_LAYOUT.STRIKE_POLICY;
+        if (payload.tutorQuestion) {
+          modelInput.tutorQuestion = payload.tutorQuestion;
+          modelInput.tutorQuestionNote = "tutorQuestion is the question the student is working on. It is shown beside the canvas, not on it: the image contains only the student's own work.";
+        }
+        if (payload.suggestion === "hint") modelInput.actionMeaning = TUTOR_LAYOUT.HINT_PROMPT;
         if (payload.suggestion === "check_step") {
           payload.tutorCheck = tutorCheckLevel(ip, payload.tutorPage);
           payload.tutorCheckLimit = TUTOR_CHECK_LIMIT;
@@ -4502,8 +4508,15 @@ ${WIDGET_PATCH_FORMAT_POLICY}`,
       const sentImage=imageDataUrlParts(activeAtlasImage);
       const selectionLog=payload.selectionContext?{box:payload.selectionContext.box,closed:payload.selectionContext.closed,pointCount:payload.selectionContext.path.length}:null;
       if (payload.tutorCheck) tutorCheckDone(ip, payload.tutorPage);
-      log({ type:"ai", requestId, ip, action:payload.userAction, ...(payload.suggestion ? { suggestion:payload.suggestion } : {}), ...(payload.tutorCheck ? { tutorCheck:payload.tutorCheck, tutorCheckLimit:TUTOR_CHECK_LIMIT, tutorPage:payload.tutorPage || "" } : {}), uiTheme:payload.uiTheme, provider:model.provider,model:model.model,effort:model.effort,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,selectionContext:selectionLog,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,imageTransport:{configuredFormat:imageTransport.encoding.configuredFormat,sourceMimeType:imageTransport.source.mimeType,sourceBytes:imageTransport.source.bytes,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,sentMimeType:sentImage?.mimeType||null,sentBytes:sentImage?.bytes||null,encodingStatus:imageTransport.encoding.status,fallbackUsed:imageTransport.fallbackUsed},upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
-      const responseBody={...result,requestId,attempts};
+      // Fork (tutor mode): the reply's kind, page and text go to the student's hint window (in the
+      // response) and to the log, which is how the teacher's bridge sees what the AI said.
+      const tutorInfo = TUTOR_MODE ? { kind:payload.trigger === "user_paused" ? "auto" : String(payload.suggestion || payload.userAction || ""), page:payload.tutorPage || "",
+        check:payload.tutorCheck || null, limit:payload.tutorCheck ? TUTOR_CHECK_LIMIT : null,
+        reply:String((result.commands || []).find((command) => command?.tutorLayout === true)?.text
+          || (result.commands || []).map((command) => command?.tool === "write_text" && typeof command.text === "string" ? command.text
+            : command?.tool === "draw_formula" && typeof command.latex === "string" ? `$${command.latex}$` : "").filter(Boolean).join("\n")).slice(0, 1000) } : null;
+      log({ type:"ai", requestId, ip, action:payload.userAction, ...(payload.suggestion ? { suggestion:payload.suggestion } : {}), ...(payload.tutorCheck ? { tutorCheck:payload.tutorCheck, tutorCheckLimit:TUTOR_CHECK_LIMIT } : {}), ...(tutorInfo ? { tutorPage:tutorInfo.page, tutorKind:tutorInfo.kind, tutorReply:tutorInfo.reply } : {}), uiTheme:payload.uiTheme, provider:model.provider,model:model.model,effort:model.effort,atlasSize:payload.atlasSize,visibleRect:payload.visibleRect,captureRect:payload.captureRect,sourceRect:payload.sourceRect,imageScale:payload.imageScale,latestInput,selectionContext:selectionLog,hotspots:payload.hotspotGrid.hotspots.length,changedBox:payload.changedBox,imageTransport:{configuredFormat:imageTransport.encoding.configuredFormat,sourceMimeType:imageTransport.source.mimeType,sourceBytes:imageTransport.source.bytes,preferredMimeType:imageTransport.preferred.mimeType,preferredBytes:imageTransport.preferred.bytes,sentMimeType:sentImage?.mimeType||null,sentBytes:sentImage?.bytes||null,encodingStatus:imageTransport.encoding.status,fallbackUsed:imageTransport.fallbackUsed},upstreamStatus:model.status,status:200,elapsedMs:Date.now()-started,attempts,intent:loggedIntent,commandCount:result.commands.length,tools:loggedTools });
+      const responseBody={...result,requestId,attempts,...(tutorInfo ? { tutor:{ kind:tutorInfo.kind, page:tutorInfo.page, check:tutorInfo.check, limit:tutorInfo.limit } } : {})};
       if (providerSnapshot.local) ensureCurrentLocalRequest(localRun);
       completeRequestTrace(requestTrace,"completed",200,responseBody);
       sendAiResponse(progress,res,200,responseBody);

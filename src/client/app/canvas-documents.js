@@ -1306,6 +1306,13 @@
     if (!canvasDocumentsDraft?.ready || canvasDocumentsDraft.activeId === canvasDocuments.activeId) return;
     canvasDocumentsDraft.activeId = canvasDocuments.activeId;
     try { sessionStorage.setItem(canvasDocumentsDraftStorageKey(), canvasDocuments.activeId || ""); } catch {}
+    // Fork (tutor mode, student view): also across a closed tab / browser restart; never the blank boot page,
+    // so a failed restore cannot overwrite the lesson page the student was on.
+    if (canvasDocumentsTutorStudent() && !/^(untitled canvas|未命名画布)$/i.test(String(canvasDocumentsCurrent()?.title || "").trim()))
+      try { localStorage.setItem("penecho.tutorActivePage", canvasDocuments.activeId || ""); } catch {}
+  }
+  function canvasDocumentsTutorStudent() {
+    return window.PENECHO_CONFIG?.tutorMode === true && typeof tutorStudentUi === "function" && tutorStudentUi();
   }
   function canvasDocumentsDraftKey() { return `${canvasDocuments.activeId}:${state.userRevision}:${canvasDocumentsDraft.commitVersion}`; }
   function canvasDocumentsDraftBusy() {
@@ -1325,6 +1332,7 @@
       const revision = state.userRevision, epoch = canvasDocuments.epoch;
       let activeId = "";
       try { activeId = sessionStorage.getItem(canvasDocumentsDraftStorageKey()) || ""; } catch {}
+      if (!activeId && canvasDocumentsTutorStudent()) try { activeId = localStorage.getItem("penecho.tutorActivePage") || ""; } catch {}
       await canvasDocumentsReady();
       if (restore && revision === state.userRevision && epoch === canvasDocuments.epoch
         && !canvasDocumentsDraftHasContent() && !canvasDocumentsDraftBusy()) {

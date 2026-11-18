@@ -1330,21 +1330,19 @@
     if (productName) { document.title = productName; if (brand) brand.textContent = productName; }
     if (tutorStudentUi()) {
       // Student view: studio-shell.css hides what a student does not need
-      // (:root[data-tutor-student]). "New canvas" is how a student moves to the next
-      // question, so it gets its own button instead of sitting in the More menu.
+      // (:root[data-tutor-student]), including New canvas: every question already has its own
+      // page, reached from the numbered dots in the Question window.
       document.documentElement.setAttribute("data-tutor-student", "");
-      const anchor = document.querySelector("#canvasMoreControl");
-      if (anchor && document.querySelector("#newCanvasBtn")) {
-        const next = document.createElement("button"),
-          label = /^zh/i.test(document.documentElement.lang || navigator.language || "") ? "\u65b0\u5efa\u753b\u5e03" : "New canvas";
-        next.id = "tutorNewCanvasBtn";
-        next.type = "button";
-        next.dataset.shellForward = "#newCanvasBtn";
-        next.textContent = label;
-        next.title = label;
-        anchor.before(next);
-      }
     }
+  }
+  // Fork (tutor mode, student view): Check and Hint look at all of the student's work on the page,
+  // not only the strokes written since the last request.
+  function tutorWholePageBox() {
+    if (!tutorModeOn() || typeof tutorStudentUi !== "function" || !tutorStudentUi() || typeof canvasAgentContentBounds !== "function") return null;
+    const box = canvasAgentContentBounds();
+    if (!box || !(box.w > 0) || !(box.h > 0)) return null;
+    const pad = 160, x = Math.max(0, box.x - pad), y = Math.max(0, box.y - pad);
+    return { x, y, w:Math.min(SIZE, box.x + box.w + pad) - x, h:Math.min(SIZE, box.y + box.h + pad) - y };
   }
   function tutorFilter(items) { return (items || []).filter(item => !TUTOR_HIDDEN_ACTIONS.includes(item.id)); }
   function tutorAssistView(view) {
@@ -2409,10 +2407,12 @@
       return;
     }
     renderAssist(workingModel);
+    const whole = (id === "check_step" || id === "hint") && typeof tutorWholePageBox === "function" ? tutorWholePageBox() : null;
     target.requestPromise = requestAI(action.exec.action, null, {
       fromSuggestBar:true,
       ...assistRequestOptions(target),
-      attentionBox:{ ...(action.exec.focus === "new" && target.newBox ? target.newBox : target.box) },
+      attentionBox:{ ...(whole || (action.exec.focus === "new" && target.newBox ? target.newBox : target.box)) },
+      ...(whole ? { captureRegion:{ ...whole }, captureWholeInput:true, thinkingBox:{ ...target.box } } : {}),
       focusAttention:true,
       suggestion:action.exec.suggestion,
       ...(id === "finish_drawing" ? { sourceInk:assistFinishDrawingInk(target) } : {}),

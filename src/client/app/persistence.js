@@ -1857,6 +1857,8 @@
     setStatusKey("newCanvasReady");
   }
   function openNewCanvasDialog() {
+    // Fork (tutor mode): the teacher's bridge makes one page per question; students do not add pages.
+    if (typeof tutorStudentUi === "function" && tutorStudentUi()) return Promise.resolve(false);
     window.PenEchoStudioNavigator?.cancelPendingConversation?.();
     return requestCanvasTransition({ type:"new" });
   }
@@ -1903,6 +1905,11 @@
     return true;
   }
   function requestCanvasTransition(transition) {
+    // Fork (tutor mode): nor do they close the question pages.
+    if (["new", "close"].includes(transition?.type) && typeof tutorStudentUi === "function" && tutorStudentUi()) {
+      transition?.onCancel?.();
+      return Promise.resolve(false);
+    }
     if (transition?.type === "new" && typeof canvasDocuments !== "undefined" && canvasDocuments.records.size >= (typeof CANVAS_DOCUMENT_LIMIT === "number" ? CANVAS_DOCUMENT_LIMIT : 32)) {
       setStatus(typeof canvasDocumentsLimitMessage === "function" ? canvasDocumentsLimitMessage() : "32 Canvases are already open. Close an unused Canvas before opening another.");
       return Promise.resolve(false);

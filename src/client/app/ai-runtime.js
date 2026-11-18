@@ -65,6 +65,12 @@
     return true;
   }
   function supersedeActiveAI(reason) {
+    // Fork (tutor mode, student view): writing on, or leaving, the page does not cancel a Check/Hint the
+    // student asked for; the reply is filed under the page it came from (tutorHintTake).
+    if ((reason === "user-input-started" || reason === "recognition-invalidated") && typeof tutorStudentUi === "function" && tutorStudentUi()) {
+      const runs = [state.activeAI, aiPreparation].filter(run => run && !run.superseded);
+      if (runs.length && runs.every(run => run.action !== "auto")) return;
+    }
     aiPreparationGeneration++;
     const preparation = aiPreparation;
     let cancelled = false;
@@ -442,6 +448,8 @@
             ...(!automatic && typeof requestOptions.suggestion === "string" ? { suggestion:requestOptions.suggestion } : {}),
             // Fork (tutor mode): the page id lets the server count staged checks per question.
             ...(globalThis.PENECHO_CONFIG?.tutorMode === true && typeof canvasDocuments !== "undefined" && canvasDocuments.activeId ? { tutorPage:String(canvasDocuments.activeId).slice(0, 96) } : {}),
+            // Fork (tutor mode): the question is not on the canvas, so it travels with the request.
+            ...(globalThis.PENECHO_CONFIG?.tutorMode === true && typeof tutorQuestionContext === "function" && tutorQuestionContext() ? { tutorQuestion:tutorQuestionContext().slice(0, 3000) } : {}),
             ...(!automatic && requestOptions.suggestion === "vivid" ? { illustrationStyle:PenEchoIllustrationStyle.normalize(state.illustrationStyle), illustrationBackground:PenEchoIllustrationStyle.normalizeBackground(state.illustrationBackground) } : {}),
             ...(sourceInk ? { sourceInk } : {}),
             ...(sketchInk ? { sketchInk } : {}),
@@ -470,6 +478,15 @@
       run.slowNoticeTimer = 0;
       if (state.activeAI === run) setBusy(false);
       if (typeof requestOptions.transformCommands === "function") data.commands = requestOptions.transformCommands(Array.isArray(data.commands) ? data.commands : []);
+      // Fork (tutor mode): on a student's tablet the reply goes to the AI window instead of the canvas.
+      const tutorReply = typeof tutorHintTake === "function" ? tutorHintTake(data, requestOptions, action, automatic) : null;
+      if (tutorReply) {
+        // Consume the request's ink only when the student is still on that page and has not written since.
+        if (run.recognitionGeneration === state.recognitionGeneration && (typeof smartSuggest !== "object" || (smartSuggest.strokes.at(-1)?.id || 0) === run.strokeId)) consumeAIRequestInput(run);
+        run.completed = true;
+        setStatusKey("aiDone");
+        return;
+      }
       const rawCommands = Array.isArray(data.commands) ? data.commands : [],
         rawCount = rawCommands.length,
         widgetLimitReached = !widgetEditTarget && state.widgets.length >= MAX_VISIBLE_WIDGETS && rawCommands.some((command) => ["html_widget", "diagram_source"].includes(command?.tool || command?.type || command?.name)),

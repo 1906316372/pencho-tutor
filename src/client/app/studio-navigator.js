@@ -944,6 +944,8 @@
     }
     function noteStudioMcpContentUpdate(documentId,region=null) {
       if(!documentId||!canvasDocuments.records.has(documentId))return;
+      // Fork (tutor mode): a student's tablet never jumps to a page the teacher's bridge wrote to.
+      if(typeof tutorStudentUi==="function"&&tutorStudentUi())return;
       studioMcpUpdateRevision++;
       studioMcpLatestDocumentId=documentId;
       studioMcpLatestRegion=region;

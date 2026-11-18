@@ -9,7 +9,8 @@
 // width that fits the longest line.
 
 const TEXT_ACTIONS = new Set(["auto", "hint", "explain", "answer", "continue"]);
-const TEXT_SUGGESTIONS = new Set(["check_step", "hint", "explain"]);
+// practice and ask too: on a student's tablet every AI reply goes to the hint window as one text block.
+const TEXT_SUGGESTIONS = new Set(["check_step", "hint", "explain", "practice", "ask"]);
 const MAX_TEXT = 1000;
 
 // Appended to modelInput for the requests applies() accepts.
@@ -32,7 +33,7 @@ const STRIKE_POLICY = "Handwriting crossed out with a straight line (usually red
 // where to look but never gives a corrected step or the result. The check after that shows
 // the full correction. `level` is 1 for the first check of a page.
 function checkPrompt(level, limit) {
-  const common = "Check the student's own handwritten work in the target region: verify every step and the result independently. "
+  const common = "Check all of the student's own handwritten work on the page (latestInput covers the whole page): verify every step and the result independently. "
     + "Ignore anything the student crossed out. If every remaining step and the result are correct, reply with one short confirmation starting with \u2713 and nothing else. Otherwise start with \u2717. ";
   if (level > limit) {
     return common + `The student has already used all ${limit} guided checks, so now show the correction: say where each error is, `
@@ -47,6 +48,11 @@ function checkPrompt(level, limit) {
     + "Do NOT say what the mistake is or what kind of mistake it is, do NOT name a rule, method or thing to re-check, do NOT ask a leading question, "
     + "and do NOT write any corrected expression, corrected step, correct value or the final result. The student must find the mistake alone.";
 }
+
+// Hint in tutor mode (replaces the usual Hint behaviour): point the way, never write the step.
+const HINT_PROMPT = "Tutor hint (this replaces the usual Hint behaviour). Read all of the student's work on the page and the question (tutorQuestion, if given). "
+  + "Give one short hint for the next step only: name the rule, idea or place to look at, or ask one guiding question. "
+  + "Do NOT write any transformed expression, equation, value or the next line of working, and never the result. At most two short sentences.";
 
 function checkFooter(level, limit) {
   if (!(level >= 1) || !(limit >= 1)) return "";
@@ -223,4 +229,4 @@ function arrange(commands, payload) {
   return commands.flatMap((command, index) => index === first ? [block] : flow.includes(command) ? [] : [command]);
 }
 
-module.exports = { FORMAT, STRIKE_POLICY, checkPrompt, checkFooter, applies, arrange, formulaLines, lineWidthEm, mathify, emphasize };
+module.exports = { FORMAT, STRIKE_POLICY, HINT_PROMPT, checkPrompt, checkFooter, applies, arrange, formulaLines, lineWidthEm, mathify, emphasize };
